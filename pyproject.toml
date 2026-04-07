@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "choola"
+version = "0.2.0"
+description = "A workflow engine for VS Code developers — build, run, and automate workflows with Python nodes."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.49.0",
+    "click>=8.1",
+    "flask>=3.0",
+    "google-genai>=1.0.0",
+    "requests>=2.31.0",
+    "aiofiles>=23.0",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+]
+
+[project.scripts]
+choola = "choola.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["choola*"]
+
+[tool.setuptools.package-data]
+choola = [
+    "static/**/*",
+    "CLAUDE.md",
+]

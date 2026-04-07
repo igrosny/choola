@@ -1,0 +1,120 @@
+/* ── Code editor overlay ───────────────────────────────── */
+.code-editor-wrapper {
+  position: relative;
+}
+.code-editor-pre {
+  tab-size: 4 !important;
+}
+.code-editor-textarea {
+  tab-size: 4 !important;
+}
+.code-editor-textarea::selection {
+  background: rgba(44, 132, 219, 0.25);
+}
+
+/* Override prism-tomorrow background for light container */
+pre[class*="language-"],
+code[class*="language-"] {
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
+/* ── ReactFlow light theme ─────────────────────────────── */
+.react-flow {
+  background: #f5f4ed;
+}
+
+.react-flow__node-default {
+  background: #ffffff;
+  color: #141413;
+  border-color: rgba(31, 30, 29, 0.2);
+  border-width: 1.5px;
+  border-radius: 10px;
+  box-shadow: rgba(0, 0, 0, 0.05) 0px 2px 8px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 14px;
+  min-width: 120px;
+  text-align: center;
+}
+
+.react-flow__node-default.selected {
+  border-color: #2c84db !important;
+  box-shadow: rgba(44, 132, 219, 0.2) 0px 0px 0px 3px;
+}
+
+.react-flow__node-default .react-flow__handle {
+  background: #d97757;
+  border: 2px solid #ffffff;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.react-flow__node-default .react-flow__handle:hover {
+  background: #c6613f;
+}
+
+/* Edge styling */
+.react-flow__edge-path {
+  stroke: #73726c;
+  stroke-width: 1.5;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: #2c84db;
+}
+
+/* Connection line */
+.react-flow__connection-path {
+  stroke: #d97757;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 5;
+}
+
+/* Controls */
+.react-flow__controls {
+  box-shadow: rgba(0, 0, 0, 0.06) 0px 2px 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 0.8px solid rgba(31, 30, 29, 0.12);
+}
+
+.react-flow__controls button {
+  background: #ffffff;
+  color: #3d3d3a;
+  border-color: rgba(31, 30, 29, 0.1);
+  fill: #3d3d3a;
+  width: 28px;
+  height: 28px;
+}
+
+.react-flow__controls button:hover {
+  background: #f5f4ed;
+}
+
+.react-flow__controls button svg {
+  fill: #3d3d3a;
+}
+
+/* MiniMap */
+.react-flow__minimap {
+  background: #ffffff;
+  border: 0.8px solid rgba(31, 30, 29, 0.12);
+  border-radius: 8px;
+}
+
+/* Attribution */
+.react-flow__attribution {
+  background: transparent;
+}
+.react-flow__attribution a {
+  color: #73726c;
+}
+
+/* Edge label renderer */
+.react-flow__edgelabel-renderer {
+  pointer-events: none;
+}
