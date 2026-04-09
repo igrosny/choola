@@ -8,6 +8,8 @@ workflows/<name>/
   nodes/
     __init__.py
     <node_name>.py        # One file per node, self-contained
+  static/                 # Static assets used by nodes (templates, schemas, seed data)
+  tmp/                    # Temporary/intermediate files created at runtime (gitignore this)
 choola.db                 # SQLite store (auto-created on first run)
 ```
 
@@ -22,6 +24,8 @@ Every node file MUST:
 3. Be self-contained — no cross-node imports
 4. Communicate exclusively via `payload: dict` passed through `execute()`
 5. Declare `name`, `category`, `description`, and `fields` class attributes
+6. Store static assets (templates, schemas, seed data, etc.) in `workflows/<name>/static/` — never bundle files inside the node `.py` itself or outside the workflow folder
+7. Use `workflows/<name>/tmp/` for any temporary or intermediate files generated at runtime — create this directory if it doesn't exist (`Path(...).mkdir(parents=True, exist_ok=True)`); never write temp files to the system temp directory or the project root
 
 ## Core Nodes
 

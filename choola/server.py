@@ -422,9 +422,9 @@ def api_run_workflow(name: str):
     """Execute a workflow and return the result."""
     body = request.get_json(force=True) if request.data else {}
     payload = body.get("payload", {})
-    run_id = uuid.uuid4().hex[:12]
+    run_id = body.get("run_id") or uuid.uuid4().hex[:12]
 
-    sse_buses[run_id] = queue.Queue()
+    sse_buses.setdefault(run_id, queue.Queue())
 
     try:
         result = run_workflow(name, payload, run_id=run_id)

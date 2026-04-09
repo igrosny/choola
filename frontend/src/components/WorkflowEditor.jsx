@@ -290,6 +290,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [nodeStatuses, setNodeStatuses] = useState({});
+  const [nodePayloads, setNodePayloads] = useState({});
   const [logs, setLogs] = useState([]);
   const [running, setRunning] = useState(false);
   const [payloadInput, setPayloadInput] = useState('{"start": true}');
@@ -431,7 +432,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
         nodeId: node.id, nodeType, source: data.source, path: data.path,
         saving: false, docSections, codeBody,
         fields: fieldsData.fields, configValues,
-        activeTab: hasFields ? 'config' : 'code',
+        activeTab: hasFields ? 'config' : 'properties',
       });
     } catch (err) {
       alert(`Error loading source: ${err.message}`);
@@ -494,11 +495,40 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
     }
   };
 
+  const attachSseBus = (runId) => {
+    const bus = new EventSource(`/api/workflows/${workflowName}/stream/${runId}`);
+    bus.addEventListener('node_status', (e) => {
+      const data = JSON.parse(e.data);
+      setNodeStatuses(prev => ({ ...prev, [data.node_id]: data.status }));
+      setLogs(prev => [...prev, `[${data.status}] ${data.node_id}`]);
+      setNodePayloads(prev => {
+        const entry = { ...prev[data.node_id] };
+        if (data.status === 'RUNNING' && data.payload !== undefined) entry.input = data.payload;
+        if (data.status === 'COMPLETED' && data.payload !== undefined) entry.output = data.payload;
+        if (data.status === 'ERROR') entry.error = data.error;
+        return { ...prev, [data.node_id]: entry };
+      });
+    });
+    bus.addEventListener('run_complete', (e) => {
+      const data = JSON.parse(e.data);
+      bus.close();
+      setRunning(false);
+      setWaitingForTrigger(false);
+      if (data.status === 'COMPLETED') {
+        setLogs(prev => [...prev, `[DONE] Output: ${JSON.stringify(data.payload)}`]);
+      } else {
+        setLogs(prev => [...prev, `[ERROR] ${data.error}`]);
+      }
+    });
+    return bus;
+  };
+
   // Run workflow
   const handleRun = async () => {
     setRunning(true);
     setLogs([]);
     setNodeStatuses({});
+    setNodePayloads({});
 
     const tt = triggerInfo?.trigger_type;
 
@@ -506,23 +536,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       const runId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
       setWaitingForTrigger(true);
       setLogs(prev => [...prev, '[INFO] Opening form... Submit the form to trigger the workflow.']);
-      const bus = new EventSource(`/api/workflows/${workflowName}/stream/${runId}`);
-      bus.addEventListener('node_status', (e) => {
-        const data = JSON.parse(e.data);
-        setNodeStatuses(prev => ({ ...prev, [data.node_id]: data.status }));
-        setLogs(prev => [...prev, `[${data.status}] ${data.node_id}`]);
-      });
-      bus.addEventListener('run_complete', (e) => {
-        const data = JSON.parse(e.data);
-        bus.close();
-        setRunning(false);
-        setWaitingForTrigger(false);
-        if (data.status === 'COMPLETED') {
-          setLogs(prev => [...prev, `[DONE] Output: ${JSON.stringify(data.payload)}`]);
-        } else {
-          setLogs(prev => [...prev, `[ERROR] ${data.error}`]);
-        }
-      });
+      attachSseBus(runId);
       window.open(`/dev/${workflowName}/form?run_id=${runId}`, '_blank', 'width=600,height=700');
       return;
     }
@@ -538,23 +552,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
         `[INFO] ${method} ${devUrl}`,
         `[INFO] Send a request to trigger the workflow.`,
       ]);
-      const bus = new EventSource(`/api/workflows/${workflowName}/stream/${runId}`);
-      bus.addEventListener('node_status', (e) => {
-        const data = JSON.parse(e.data);
-        setNodeStatuses(prev => ({ ...prev, [data.node_id]: data.status }));
-        setLogs(prev => [...prev, `[${data.status}] ${data.node_id}`]);
-      });
-      bus.addEventListener('run_complete', (e) => {
-        const data = JSON.parse(e.data);
-        bus.close();
-        setRunning(false);
-        setWaitingForTrigger(false);
-        if (data.status === 'COMPLETED') {
-          setLogs(prev => [...prev, `[DONE] Output: ${JSON.stringify(data.payload)}`]);
-        } else {
-          setLogs(prev => [...prev, `[ERROR] ${data.error}`]);
-        }
-      });
+      attachSseBus(runId);
       return;
     }
 
@@ -567,26 +565,16 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       return;
     }
 
-    try {
-      const res = await fetch(`/api/workflows/${workflowName}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload }),
-      });
-      const result = await res.json();
-      if (result.status === 'COMPLETED') {
-        setLogs(prev => [...prev, `[DONE] Output: ${JSON.stringify(result.payload)}`]);
-        const statuses = {};
-        nodes.forEach(n => { statuses[n.id] = 'COMPLETED'; });
-        setNodeStatuses(statuses);
-      } else {
-        setLogs(prev => [...prev, `[ERROR] ${result.error}`]);
-      }
-    } catch (err) {
-      setLogs(prev => [...prev, `[ERROR] ${err.message}`]);
-    } finally {
+    const runId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+    attachSseBus(runId);
+    fetch(`/api/workflows/${workflowName}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload, run_id: runId }),
+    }).catch(err => {
       setRunning(false);
-    }
+      setLogs(prev => [...prev, `[ERROR] ${err.message}`]);
+    });
   };
 
   const handleCancelTest = () => {
@@ -1081,269 +1069,309 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       )}
 
       {/* ── Node modal ── */}
-      {codeModal && (
-        <div
-          onClick={() => setCodeModal(null)}
-          style={{
-            position: 'fixed', inset: 0,
-            background: 'rgba(20,20,19,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 200, padding: 24,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
+      {codeModal && (() => {
+        const nodeStatus = nodeStatuses[codeModal.nodeId];
+        const payloadEntry = nodePayloads[codeModal.nodeId];
+        const panelBorder = '0.8px solid rgba(31,30,29,0.1)';
+        const panelHeaderStyle = {
+          flexShrink: 0, padding: '0 16px', height: 38,
+          display: 'flex', alignItems: 'center',
+          borderBottom: panelBorder, background: '#faf9f5',
+          fontSize: 10, fontWeight: 600, color: '#73726c',
+          textTransform: 'uppercase', letterSpacing: '0.08em',
+        };
+        const tabBtn = (tab, label) => (
+          <button
+            key={tab}
+            onClick={() => setCodeModal(prev => prev ? { ...prev, activeTab: tab } : null)}
             style={{
-              background: '#ffffff', borderRadius: 14,
-              width: '85vw', maxHeight: '88vh',
-              display: 'flex', flexDirection: 'column', gap: 0,
-              border: '0.8px solid rgba(31,30,29,0.1)',
-              boxShadow: 'rgba(0,0,0,0.12) 0px 8px 40px',
-              overflow: 'hidden',
+              padding: '0 18px', height: '100%', border: 'none', cursor: 'pointer',
+              fontSize: 13, fontWeight: 500, fontFamily: 'var(--font-ui)',
+              background: 'transparent',
+              color: codeModal.activeTab === tab ? '#141413' : '#73726c',
+              borderBottom: codeModal.activeTab === tab ? '2px solid #141413' : '2px solid transparent',
+              transition: 'all 0.15s ease',
+            }}
+          >{label}</button>
+        );
+        const PayloadPane = ({ data, error, emptyMsg }) => (
+          <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+            {error
+              ? <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1.6, color: '#b33232', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{error}</pre>
+              : data !== undefined
+                ? <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1.6, color: '#141413', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(data, null, 2)}</pre>
+                : <span style={{ fontSize: 12, color: '#73726c', fontStyle: 'italic' }}>{emptyMsg}</span>
+            }
+          </div>
+        );
+        return (
+          <div
+            onClick={() => setCodeModal(null)}
+            style={{
+              position: 'fixed', inset: 0,
+              background: 'rgba(20,20,19,0.5)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 200,
             }}
           >
-            {/* Modal header / tabs */}
-            <div style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '0 20px',
-              borderBottom: '0.8px solid rgba(31,30,29,0.1)',
-              background: '#faf9f5',
-            }}>
-              <div style={{ display: 'flex', gap: 0 }}>
-                {codeModal.fields && codeModal.fields.length > 0 && (
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                background: '#ffffff', borderRadius: 14,
+                width: '88vw', height: '82vh',
+                display: 'flex', flexDirection: 'column',
+                border: panelBorder,
+                boxShadow: 'rgba(0,0,0,0.12) 0px 8px 40px',
+                overflow: 'hidden',
+              }}
+            >
+              {/* Modal header */}
+              <div style={{
+                flexShrink: 0, height: 48,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '0 20px',
+                borderBottom: panelBorder, background: '#faf9f5',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: '#141413' }}>
+                    {codeModal.nodeType.split('.').pop()}
+                  </span>
+                  <span style={{ fontSize: 11, color: '#73726c', fontFamily: 'var(--font-mono)' }}>
+                    {codeModal.path}
+                  </span>
+                  {nodeStatus && (
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 5,
+                      background: nodeStatus === 'ERROR' ? 'rgba(179,50,50,0.1)' : nodeStatus === 'COMPLETED' ? 'rgba(47,118,19,0.1)' : 'rgba(135,90,8,0.1)',
+                      color: STATUS_COLORS[nodeStatus],
+                    }}>{nodeStatus}</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setCodeModal(null)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#73726c', fontSize: 18, padding: 4, lineHeight: 1 }}
+                >✕</button>
+              </div>
+
+              {/* Body — 3 columns */}
+              <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+
+                {/* Left: input payload (25%) */}
+                <div style={{ width: '25%', flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: panelBorder }}>
+                  <div style={panelHeaderStyle}>Input Payload</div>
+                  <PayloadPane
+                    data={payloadEntry?.input}
+                    emptyMsg="Run the workflow to see the input payload."
+                  />
+                </div>
+
+                {/* Center: tabs (50%) */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, borderRight: panelBorder }}>
+                  {/* Tab bar */}
+                  <div style={{
+                    flexShrink: 0, height: 38, display: 'flex', alignItems: 'stretch',
+                    borderBottom: panelBorder, background: '#faf9f5',
+                  }}>
+                    {tabBtn('properties', 'Properties')}
+                    {codeModal.fields && codeModal.fields.length > 0 && tabBtn('config', 'Configuration')}
+                    {tabBtn('code', 'Code')}
+                  </div>
+
+                  {/* Tab content */}
+                  <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+
+                    {/* Properties tab */}
+                    {codeModal.activeTab === 'properties' && (
+                      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 18px' }}>
+                        <DocPanel sections={codeModal.docSections} />
+                      </div>
+                    )}
+
+                    {/* Configuration tab */}
+                    {codeModal.activeTab === 'config' && (
+                      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+                        {(codeModal.fields || []).map(field => (
+                          <div key={field.name} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <label style={{ fontSize: 13, fontWeight: 500, color: '#141413' }}>
+                              {field.name}
+                              {field.required && <span style={{ color: '#b33232', marginLeft: 4 }}>*</span>}
+                            </label>
+                            {field.description && (
+                              <span style={{ fontSize: 12, color: '#73726c' }}>{field.description}</span>
+                            )}
+                            {field.type === 'select' ? (
+                              <select
+                                value={codeModal.configValues[field.name] ?? field.default ?? ''}
+                                onChange={e => setCodeModal(prev => prev ? {
+                                  ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
+                                } : null)}
+                                disabled={isPublished}
+                                style={{ ...inputStyle, height: 44 }}
+                              >
+                                <option value="">Select...</option>
+                                {(field.options || []).map(opt => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                            ) : field.type === 'textarea' ? (
+                              <textarea
+                                value={codeModal.configValues[field.name] ?? ''}
+                                onChange={e => setCodeModal(prev => prev ? {
+                                  ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
+                                } : null)}
+                                readOnly={isPublished}
+                                placeholder={field.placeholder || ''}
+                                rows={4}
+                                style={{
+                                  width: '100%', padding: '10px 12px',
+                                  borderRadius: 8, border: '0.8px solid rgba(31,30,29,0.15)',
+                                  background: '#ffffff', color: '#141413',
+                                  fontSize: 13, resize: 'vertical',
+                                  fontFamily: 'var(--font-ui)', outline: 'none',
+                                }}
+                              />
+                            ) : field.type === 'number' ? (
+                              <input
+                                type="number"
+                                value={codeModal.configValues[field.name] ?? ''}
+                                onChange={e => setCodeModal(prev => prev ? {
+                                  ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value === '' ? '' : Number(e.target.value) },
+                                } : null)}
+                                readOnly={isPublished}
+                                placeholder={field.placeholder || ''}
+                                style={{ ...inputStyle, height: 44, width: 200 }}
+                              />
+                            ) : field.type === 'json' ? (
+                              <textarea
+                                value={typeof codeModal.configValues[field.name] === 'string'
+                                  ? codeModal.configValues[field.name]
+                                  : JSON.stringify(codeModal.configValues[field.name] ?? '', null, 2)}
+                                onChange={e => setCodeModal(prev => {
+                                  if (!prev) return null;
+                                  let val = e.target.value;
+                                  try { val = JSON.parse(val); } catch {}
+                                  return { ...prev, configValues: { ...prev.configValues, [field.name]: val } };
+                                })}
+                                readOnly={isPublished}
+                                placeholder={field.placeholder || '[]'}
+                                rows={6}
+                                style={{
+                                  width: '100%', padding: '10px 12px',
+                                  borderRadius: 8, border: '0.8px solid rgba(31,30,29,0.15)',
+                                  background: '#ffffff', color: '#141413',
+                                  fontSize: 12, resize: 'vertical',
+                                  fontFamily: 'var(--font-mono)', outline: 'none',
+                                }}
+                              />
+                            ) : (
+                              <input
+                                type="text"
+                                value={codeModal.configValues[field.name] ?? ''}
+                                onChange={e => setCodeModal(prev => prev ? {
+                                  ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
+                                } : null)}
+                                readOnly={isPublished}
+                                placeholder={field.placeholder || ''}
+                                style={{ ...inputStyle, height: 44 }}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Code tab */}
+                    {codeModal.activeTab === 'code' && (
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: '#1a1a18' }}>
+                        <div style={{
+                          fontSize: 11, fontWeight: 600, color: '#73726c', textTransform: 'uppercase',
+                          letterSpacing: '0.08em', padding: '10px 16px 6px', flexShrink: 0,
+                        }}>
+                          Source code
+                        </div>
+                        <div className="code-editor-wrapper" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+                          <pre
+                            className="code-editor-pre"
+                            aria-hidden="true"
+                            style={{
+                              position: 'absolute', inset: 0, margin: 0, padding: 16,
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre', overflow: 'auto',
+                              pointerEvents: 'none', color: '#ccc', background: 'transparent',
+                            }}
+                            dangerouslySetInnerHTML={{
+                              __html: (() => {
+                                try {
+                                  return Prism.highlight(codeModal.codeBody || '', Prism.languages.python, 'python');
+                                } catch {
+                                  return (codeModal.codeBody || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+                                }
+                              })() + '\n',
+                            }}
+                          />
+                          <textarea
+                            className="code-editor-textarea"
+                            value={codeModal.codeBody || ''}
+                            onChange={e => setCodeModal(prev => prev ? ({ ...prev, codeBody: e.target.value }) : null)}
+                            readOnly={isPublished}
+                            spellCheck={false}
+                            style={{
+                              position: 'relative', width: '100%', height: '100%',
+                              margin: 0, padding: 16, border: 'none', outline: 'none', resize: 'none',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre', tabSize: 4,
+                              color: 'transparent', caretColor: '#fff', background: 'transparent',
+                            }}
+                            onScroll={e => {
+                              const pre = e.target.previousSibling;
+                              if (pre) { pre.scrollTop = e.target.scrollTop; pre.scrollLeft = e.target.scrollLeft; }
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right: output payload (25%) */}
+                <div style={{ width: '25%', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+                  <div style={panelHeaderStyle}>Output Payload</div>
+                  <PayloadPane
+                    data={payloadEntry?.output}
+                    error={payloadEntry?.error}
+                    emptyMsg="Run the workflow to see the output payload."
+                  />
+                </div>
+              </div>
+
+              {/* Modal footer */}
+              <div style={{
+                flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 8,
+                padding: '10px 20px',
+                borderTop: panelBorder, background: '#faf9f5',
+              }}>
+                <button onClick={() => setCodeModal(null)} style={btnGhost}>
+                  {isPublished ? 'Close' : 'Cancel'}
+                </button>
+                {!isPublished && codeModal.activeTab !== 'properties' && (
                   <button
-                    onClick={() => setCodeModal(prev => prev ? { ...prev, activeTab: 'config' } : null)}
+                    onClick={codeModal.activeTab === 'config' ? handleSaveConfig : handleSaveCode}
+                    disabled={codeModal.saving}
                     style={{
-                      padding: '13px 18px', border: 'none', cursor: 'pointer',
-                      fontSize: 13, fontWeight: 500, fontFamily: 'var(--font-ui)',
-                      background: 'transparent',
-                      color: codeModal.activeTab === 'config' ? '#141413' : '#73726c',
-                      borderBottom: codeModal.activeTab === 'config' ? '2px solid #141413' : '2px solid transparent',
-                      transition: 'all 0.15s ease',
+                      ...btnPrimary,
+                      background: codeModal.saving ? '#e8e6dc' : '#141413',
+                      color: codeModal.saving ? '#73726c' : '#ffffff',
+                      cursor: codeModal.saving ? 'default' : 'pointer',
                     }}
                   >
-                    Settings
+                    {codeModal.saving ? 'Saving...' : 'Save'}
                   </button>
                 )}
-                <button
-                  onClick={() => setCodeModal(prev => prev ? { ...prev, activeTab: 'code' } : null)}
-                  style={{
-                    padding: '13px 18px', border: 'none', cursor: 'pointer',
-                    fontSize: 13, fontWeight: 500, fontFamily: 'var(--font-ui)',
-                    background: 'transparent',
-                    color: codeModal.activeTab === 'code' ? '#141413' : '#73726c',
-                    borderBottom: codeModal.activeTab === 'code' ? '2px solid #141413' : '2px solid transparent',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  Code
-                </button>
               </div>
-              <button
-                onClick={() => setCodeModal(null)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#73726c', fontSize: 18, padding: 4, lineHeight: 1 }}
-              >✕</button>
-            </div>
-
-            {/* Tab content */}
-            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              {codeModal.activeTab === 'config' ? (
-                <div style={{
-                  flex: 1, overflowY: 'auto', padding: '24px',
-                  display: 'flex', flexDirection: 'column', gap: 20,
-                }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#73726c', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                    Node configuration
-                  </div>
-                  {(codeModal.fields || []).map(field => (
-                    <div key={field.name} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      <label style={{ fontSize: 13, fontWeight: 500, color: '#141413' }}>
-                        {field.name}
-                        {field.required && <span style={{ color: '#b33232', marginLeft: 4 }}>*</span>}
-                      </label>
-                      {field.description && (
-                        <span style={{ fontSize: 12, color: '#73726c' }}>{field.description}</span>
-                      )}
-                      {field.type === 'select' ? (
-                        <select
-                          value={codeModal.configValues[field.name] ?? field.default ?? ''}
-                          onChange={e => setCodeModal(prev => prev ? {
-                            ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
-                          } : null)}
-                          disabled={isPublished}
-                          style={{ ...inputStyle, height: 44 }}
-                        >
-                          <option value="">Select...</option>
-                          {(field.options || []).map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      ) : field.type === 'textarea' ? (
-                        <textarea
-                          value={codeModal.configValues[field.name] ?? ''}
-                          onChange={e => setCodeModal(prev => prev ? {
-                            ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
-                          } : null)}
-                          readOnly={isPublished}
-                          placeholder={field.placeholder || ''}
-                          rows={4}
-                          style={{
-                            width: '100%', padding: '10px 12px',
-                            borderRadius: 8, border: '0.8px solid rgba(31,30,29,0.15)',
-                            background: '#ffffff', color: '#141413',
-                            fontSize: 13, resize: 'vertical',
-                            fontFamily: 'var(--font-ui)', outline: 'none',
-                          }}
-                        />
-                      ) : field.type === 'number' ? (
-                        <input
-                          type="number"
-                          value={codeModal.configValues[field.name] ?? ''}
-                          onChange={e => setCodeModal(prev => prev ? {
-                            ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value === '' ? '' : Number(e.target.value) },
-                          } : null)}
-                          readOnly={isPublished}
-                          placeholder={field.placeholder || ''}
-                          style={{ ...inputStyle, height: 44, width: 200 }}
-                        />
-                      ) : field.type === 'json' ? (
-                        <textarea
-                          value={typeof codeModal.configValues[field.name] === 'string'
-                            ? codeModal.configValues[field.name]
-                            : JSON.stringify(codeModal.configValues[field.name] ?? '', null, 2)}
-                          onChange={e => setCodeModal(prev => {
-                            if (!prev) return null;
-                            let val = e.target.value;
-                            try { val = JSON.parse(val); } catch {}
-                            return { ...prev, configValues: { ...prev.configValues, [field.name]: val } };
-                          })}
-                          readOnly={isPublished}
-                          placeholder={field.placeholder || '[]'}
-                          rows={6}
-                          style={{
-                            width: '100%', padding: '10px 12px',
-                            borderRadius: 8, border: '0.8px solid rgba(31,30,29,0.15)',
-                            background: '#ffffff', color: '#141413',
-                            fontSize: 12, resize: 'vertical',
-                            fontFamily: 'var(--font-mono)', outline: 'none',
-                          }}
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          value={codeModal.configValues[field.name] ?? ''}
-                          onChange={e => setCodeModal(prev => prev ? {
-                            ...prev, configValues: { ...prev.configValues, [field.name]: e.target.value },
-                          } : null)}
-                          readOnly={isPublished}
-                          placeholder={field.placeholder || ''}
-                          style={{ ...inputStyle, height: 44 }}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                /* Code tab */
-                <div style={{ display: 'flex', flex: 1, gap: 0, minHeight: 0, overflow: 'hidden' }}>
-                  {/* Doc panel */}
-                  <div style={{
-                    width: '33%', flexShrink: 0,
-                    background: '#faf9f5',
-                    borderRight: '0.8px solid rgba(31,30,29,0.1)',
-                    padding: '20px 18px', overflowY: 'auto',
-                  }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: '#73726c', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 14 }}>
-                      Node documentation
-                    </div>
-                    <DocPanel sections={codeModal.docSections} />
-                  </div>
-
-                  {/* Code editor */}
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: '#1a1a18' }}>
-                    <div style={{
-                      fontSize: 11, fontWeight: 600, color: '#73726c', textTransform: 'uppercase',
-                      letterSpacing: '0.08em', padding: '10px 16px 6px',
-                    }}>
-                      Source code
-                    </div>
-                    <div className="code-editor-wrapper" style={{
-                      flex: 1, overflow: 'auto', minHeight: '50vh', position: 'relative',
-                    }}>
-                      <pre
-                        className="code-editor-pre"
-                        aria-hidden="true"
-                        style={{
-                          position: 'absolute', inset: 0, margin: 0, padding: 16,
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre', overflow: 'auto',
-                          pointerEvents: 'none', color: '#ccc', background: 'transparent',
-                        }}
-                        dangerouslySetInnerHTML={{
-                          __html: (() => {
-                            try {
-                              return Prism.highlight(codeModal.codeBody || '', Prism.languages.python, 'python');
-                            } catch {
-                              return (codeModal.codeBody || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-                            }
-                          })() + '\n',
-                        }}
-                      />
-                      <textarea
-                        className="code-editor-textarea"
-                        value={codeModal.codeBody || ''}
-                        onChange={e => setCodeModal(prev => prev ? ({ ...prev, codeBody: e.target.value }) : null)}
-                        readOnly={isPublished}
-                        spellCheck={false}
-                        style={{
-                          position: 'relative', width: '100%', height: '100%', minHeight: '50vh',
-                          margin: 0, padding: 16, border: 'none', outline: 'none', resize: 'none',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre', tabSize: 4,
-                          color: 'transparent', caretColor: '#fff', background: 'transparent',
-                        }}
-                        onScroll={e => {
-                          const pre = e.target.previousSibling;
-                          if (pre) { pre.scrollTop = e.target.scrollTop; pre.scrollLeft = e.target.scrollLeft; }
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Modal footer */}
-            <div style={{
-              display: 'flex', justifyContent: 'flex-end', gap: 8,
-              padding: '12px 20px',
-              borderTop: '0.8px solid rgba(31,30,29,0.1)',
-              background: '#faf9f5',
-            }}>
-              <button
-                onClick={() => setCodeModal(null)}
-                style={btnGhost}
-              >
-                {isPublished ? 'Close' : 'Cancel'}
-              </button>
-              {!isPublished && (
-                <button
-                  onClick={codeModal.activeTab === 'config' ? handleSaveConfig : handleSaveCode}
-                  disabled={codeModal.saving}
-                  style={{
-                    ...btnPrimary,
-                    background: codeModal.saving ? '#e8e6dc' : '#141413',
-                    color: codeModal.saving ? '#73726c' : '#ffffff',
-                    cursor: codeModal.saving ? 'default' : 'pointer',
-                  }}
-                >
-                  {codeModal.saving ? 'Saving...' : 'Save'}
-                </button>
-              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
