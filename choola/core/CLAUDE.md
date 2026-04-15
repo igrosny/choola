@@ -1,0 +1,85 @@
+# Choola Core Nodes
+
+Core nodes are the building blocks that workflow nodes extend. They live in `choola/core/nodes/` and are part of the pip-installed package.
+
+## Golden Rule
+
+**Never instantiate a core node directly in a workflow.** Always create a wrapper class in the workflow's `nodes/` directory that extends the core node. The wrapper is what goes in `topology.json`.
+
+This allows each workflow to customize field defaults, override `execute()`, and remain self-contained.
+
+## BaseNode (`choola.core.base_node.BaseNode`)
+
+The abstract base class for ALL nodes. Provides:
+
+- `node_id` — auto-generated UUID hex
+- `config` — merged from field defaults + topology config
+- `async execute(payload, context)` — MUST be implemented by subclasses
+- `async get_global(key)` / `set_global(key, value)` — persistent SQLite globals
+- `async get_credential(name)` — retrieve stored credentials
+- `ui_metadata()` — returns node metadata for the frontend
+
+**Required class attributes:**
+- `name` (str) — human-readable name for the UI
+- `category` (str) — sidebar grouping (e.g. "input", "processing", "output")
+- `description` (str) — tooltip text
+- `fields` (list[dict]) — input field definitions for the UI. Each dict has at minimum `name` and `type`
+
+## WebhookTrigger (`choola.core.nodes.webhook_trigger.WebhookTrigger`)
+
+**Category:** input
+**Purpose:** Starts a workflow when an HTTP request hits a registered endpoint.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `path` | string | yes | — | URL path, e.g. `/hooks/my-endpoint` |
+| `method` | select | no | `POST` | GET, POST, PUT, DELETE |
+| `response_mode` | select | no | `after_workflow` | `immediate` (202) or `after_workflow` (waits) |
+
+**Output payload:** `{ method, headers, query, body }`
+
+## FormTrigger (`choola.core.nodes.form_trigger.FormTrigger`)
+
+**Category:** input
+**Purpose:** Serves an HTML form at a URL path; form submission triggers the workflow.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `path` | string | yes | — | URL path, e.g. `/forms/contact` |
+| `form_title` | string | no | `""` | Heading above the form |
+| `form_description` | string | no | `""` | Description below the title |
+| `form_fields` | json | no | `[]` | Array of field definitions (see below) |
+| `response_mode` | select | no | `after_workflow` | `after_workflow` (JSON) or `redirect` (thank-you page) |
+| `submit_label` | string | no | `Submit` | Submit button text |
+
+**form_fields array items:**
+- `label` (str), `field_name` (str), `field_type` (text/email/number/password/textarea/dropdown/date/checkbox)
+- `required` (bool), `placeholder` (str), `options` (list, dropdown only), `default_value` (str)
+
+**Output payload:** `{ form_data: {field_name: value, ...}, submitted_at: "<ISO>" }`
+
+**Extra methods (used by the server, not by workflows):**
+- `render_form()` — returns HTML string
+- `render_thank_you()` — returns HTML string
+
+## LLM (`choola.core.nodes.llm.LLM`)
+
+**Category:** processing
+**Purpose:** Sends a prompt to an LLM (Claude or Gemini) and returns the response.
+
+**Requires:** A stored credential (`await self.get_credential(name)`)
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `credential_name` | string | yes | — | Name of the stored credential |
+| `provider` | select | no | `claude` | `claude` or `gemini` |
+| `model` | string | no | auto | Model ID (defaults: `claude-sonnet-4-20250514` / `gemini-2.0-flash`) |
+| `prompt` | textarea | yes | — | Prompt template; `{key}` interpolates payload values |
+| `system_prompt` | textarea | no | — | Optional system prompt |
+| `max_tokens` | number | no | 1024 | Max response tokens |
+| `temperature` | number | no | 1.0 | Sampling temperature |
+
+**Output payload:** adds `llm_response`, `llm_model`, `llm_provider` to existing payload

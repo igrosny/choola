@@ -1,95 +1,97 @@
-# Choola — Workflow Engine
+# Choola — Development Environment
 
-## Project Structure
+This is the development repo for the Choola workflow engine. The `choola/` directory IS the pip package. The `workflows/` directory holds dev/test workflows.
+
+## Two Roles, Two Scopes
+
+| You are... | You edit... | CLAUDE.md that applies |
+|---|---|---|
+| Developing the engine | `choola/`, `frontend/` | This file (root) |
+| Building a workflow | `workflows/<name>/` only | `choola/CLAUDE.md` (the one copied to user projects) |
+
+If your task is purely about creating or editing a workflow, follow `choola/CLAUDE.md` — it has the node contract and workflow rules. This file is about the engine itself.
+
+## Package Layout
 
 ```
-workflows/<name>/
-  topology.json           # DAG: nodes + edges
-  nodes/
-    __init__.py
-    <node_name>.py        # One file per node, self-contained
-  static/                 # Static assets used by nodes (templates, schemas, seed data)
-  tmp/                    # Temporary/intermediate files created at runtime (gitignore this)
-choola.db                 # SQLite store (auto-created on first run)
+choola/                 <- THE pip package
+  __init__.py           <- __version__ lives here
+  cli.py                <- `choola` CLI entry point
+  server.py             <- Flask app + execution engine
+  database.py           <- SQLite (choola.db in user's cwd)
+  CLAUDE.md             <- Workflow authoring guide (copied on `choola init`)
+  core/
+    base_node.py        <- BaseNode — every node inherits from this
+    CLAUDE.md           <- Core node reference
+    nodes/
+      form_trigger.py
+      webhook_trigger.py
+      llm.py
+  static/dist/          <- Pre-built React UI (rebuilt before release)
+
+frontend/               <- React source (Vite)
+  src/
+workflows/              <- Dev/test workflows (gitignored)
+pyproject.toml          <- Version + build config
 ```
 
-The `choola` package is installed separately via pip. Core infrastructure lives there.
+## Dev Workflow (Two Terminals)
 
-## Node Contract
+**Terminal 1 — Flask backend:**
+```bash
+choola start --debug
+```
 
-Every node file MUST:
+**Terminal 2 — Vite frontend:**
+```bash
+cd frontend && npm install && npm run dev
+```
 
-1. Start with the `@choola-node` grep-friendly docstring (see any file in `workflows/*/nodes/`)
-2. Inherit from `choola.core.base_node.BaseNode`
-3. Be self-contained — no cross-node imports
-4. Communicate exclusively via `payload: dict` passed through `execute()`
-5. Declare `name`, `category`, `description`, and `fields` class attributes
-6. Store static assets (templates, schemas, seed data, etc.) in `workflows/<name>/static/` — never bundle files inside the node `.py` itself or outside the workflow folder
-7. Use `workflows/<name>/tmp/` for any temporary or intermediate files generated at runtime — create this directory if it doesn't exist (`Path(...).mkdir(parents=True, exist_ok=True)`); never write temp files to the system temp directory or the project root
+Open `http://localhost:5173`. Vite proxies API calls to Flask at 5000.
 
-## Core Nodes
+## The Three CLAUDE.md Files
 
-These live inside the `choola` package and are available to all workflows.
+| File | Purpose | When to edit |
+|---|---|---|
+| `/CLAUDE.md` (this file) | Dev environment guide for agents working on the engine | When you change the package structure, dev workflow, or release process |
+| `/choola/CLAUDE.md` | Workflow authoring guide — copied to user projects on `choola init` | When you change the node contract, add core nodes, or change workflow rules |
+| `/choola/core/CLAUDE.md` | Core node reference — documents every core node's API | When you add, remove, or change a core node's fields/behavior |
 
-**Rule:** Core nodes must NEVER be instantiated directly in a workflow. Instead, create a new class inside the workflow's `nodes/` directory that extends the core node. This wrapper class is what gets referenced in `topology.json`.
+## Adding or Changing a Core Node
 
-### WebhookTrigger (`core.nodes.webhook_trigger.WebhookTrigger`)
-- **Category:** input
-- **Purpose:** Starts a workflow when an HTTP request hits a registered endpoint.
-- **Config fields:**
-  - `path` (str, required) — URL path, e.g. `/hooks/my-endpoint`
-  - `method` (select: GET/POST/PUT/DELETE, default `POST`)
-  - `response_mode` (select: `immediate` returns 202 right away, `after_workflow` waits for result)
-- **Output payload:** `{ method, headers, query, body }`
+1. Edit or create the node file in `choola/core/nodes/`
+2. It MUST inherit from `BaseNode` and include the `@choola-node` docstring
+3. Update `choola/core/CLAUDE.md` with the node's full API reference
+4. Update `choola/CLAUDE.md` if the node contract or workflow rules changed
+5. If the `choola nodes` CLI command lists nodes manually, update `choola/cli.py`
 
-### FormTrigger (`core.nodes.form_trigger.FormTrigger`)
-- **Category:** input
-- **Purpose:** Serves an HTML form at a URL path; form submission triggers the workflow.
-- **Config fields:**
-  - `path` (str, required) — URL path, e.g. `/forms/contact`
-  - `form_title` (str) — heading above the form
-  - `form_description` (str) — description text below the title
-  - `form_fields` (json) — array of field definitions, each with:
-    - `label`, `field_name`, `field_type` (text/email/number/password/textarea/dropdown/date/checkbox)
-    - `required` (bool), `placeholder` (str), `options` (list, dropdown only), `default_value` (str)
-  - `response_mode` (select: `after_workflow` returns JSON, `redirect` shows thank-you page)
-  - `submit_label` (str, default `Submit`)
-- **Output payload:** `{ form_data: {field_name: value, ...}, submitted_at: "<ISO timestamp>" }`
+## Committing Frontend Changes
 
-### LLM (`core.nodes.llm.LLM`)
-- **Category:** processing
-- **Purpose:** Sends a prompt to an LLM (Claude or Gemini) and returns the response.
-- **Requires:** A stored credential (managed via Settings > Credentials or `POST /api/credentials`)
-- **Config fields:**
-  - `credential_name` (str, required) — name of the stored credential to use
-  - `provider` (select: `claude`, `gemini`) — which LLM provider
-  - `model` (str) — model ID; defaults to `claude-sonnet-4-20250514` / `gemini-2.0-flash`
-  - `prompt` (textarea, required) — prompt template; use `{key}` to interpolate payload values
-  - `system_prompt` (textarea) — optional system prompt
-  - `max_tokens` (number, default 1024)
-  - `temperature` (number, default 1.0)
-- **Output payload:** adds `llm_response`, `llm_model`, `llm_provider` to existing payload
+```bash
+cd frontend && npm run build && cp -r dist ../choola/static/dist
+```
+
+Commit both `frontend/src/` and `choola/static/dist/`.
+
+## Making a Release
+
+```bash
+# 1. Rebuild the UI
+cd frontend && npm run build && cp -r dist ../choola/static/dist && cd ..
+
+# 2. Bump version in both places:
+#    choola/__init__.py  ->  __version__ = "0.x.y"
+#    pyproject.toml      ->  version = "0.x.y"
+
+# 3. Build + publish
+python -m build
+python -m twine upload dist/*
+```
 
 ## Credentials
 
-Credentials are stored in the SQLite database (`credentials` table) and accessed by nodes at runtime via `self.get_credential(name)`.
+Stored in SQLite (`credentials` table). Nodes access them via `await self.get_credential(name)`.
 
-### API
-- `GET /api/credentials` — list all credentials (values masked)
+- `GET /api/credentials` — list (values masked)
 - `POST /api/credentials` — create/update: `{ name, provider, value }`
-- `DELETE /api/credentials/<name>` — delete a credential
-
-### Node access
-Any node can call `await self.get_credential("my-key")` to retrieve a credential dict with keys: `name`, `provider`, `value`, `created_at`, `updated_at`.
-
-## CLI
-
-```bash
-choola init                              # Set up a new project (run once)
-choola start                             # Start the server at http://localhost:5000
-choola start --host 0.0.0.0 --port 8080 # Bind to all interfaces
-choola create <workflow_name>            # Scaffold a new workflow
-choola list                              # List all workflows
-choola run <workflow_name> --payload '{"key": "value"}'  # Run headlessly
-choola nodes                             # List core node types
-```
+- `DELETE /api/credentials/<name>` — delete
