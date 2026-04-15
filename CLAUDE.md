@@ -19,6 +19,7 @@ choola/                 <- THE pip package
   cli.py                <- `choola` CLI entry point
   server.py             <- Flask app + execution engine
   database.py           <- SQLite (choola.db in user's cwd)
+  evaluations.py        <- Evaluation storage (one JSON per run)
   CLAUDE.md             <- Workflow authoring guide (copied on `choola init`)
   core/
     base_node.py        <- BaseNode — every node inherits from this
@@ -32,6 +33,10 @@ choola/                 <- THE pip package
 frontend/               <- React source (Vite)
   src/
 workflows/              <- Dev/test workflows (gitignored)
+  <name>/
+    nodes/              <- Workflow node files
+    files/              <- Binary/generated files (auto-created)
+    evaluations/        <- Run evaluations (auto-generated, one JSON per run)
 pyproject.toml          <- Version + build config
 ```
 

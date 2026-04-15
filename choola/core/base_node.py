@@ -30,20 +30,24 @@ class BaseNode(abc.ABC):
     """Abstract base class for all Choola workflow nodes.
 
     Class-level attributes (override in subclasses):
+        node_id     — unique identifier for this node within a workflow (snake_case).
         name        — human-readable node name shown in the UI.
         category    — grouping label for the sidebar palette (e.g. "routing").
         description — short tooltip text.
         fields      — list of dicts describing the input fields the UI should
                       render.  Each dict has at minimum {"name": ..., "type": ...}.
+        next_nodes  — list of node_id strings this node passes its output to.
     """
 
+    node_id: ClassVar[str] = ""
     name: ClassVar[str] = "Unnamed Node"
     category: ClassVar[str] = "general"
     description: ClassVar[str] = ""
     fields: ClassVar[list[dict[str, Any]]] = []
+    next_nodes: ClassVar[list[str]] = []
 
     def __init__(self, node_id: str | None = None, config: dict[str, Any] | None = None):
-        self.node_id: str = node_id or uuid.uuid4().hex[:12]
+        self.node_id: str = node_id or self.__class__.node_id or uuid.uuid4().hex[:12]
         # Merge defaults from fields with the supplied config.
         # Priority: topology/modal config > field defaults
         defaults = {

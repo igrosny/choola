@@ -46,10 +46,10 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from choola.core.base_node import BaseNode
+from choola.core.nodes.trigger import Trigger
 
 
-class FormTrigger(BaseNode):
+class FormTrigger(Trigger):
     name = "Form Trigger"
     category = "input"
     description = "Starts a workflow by showing a web form to collect user input."

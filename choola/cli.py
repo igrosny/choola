@@ -48,6 +48,12 @@ from choola.database import (
     set_global_async,
     get_credential_async,
 )
+from choola.evaluations import (
+    build_evaluation,
+    capture_payload,
+    make_node_eval,
+    save_evaluation,
+)
 
 # Package root — used to locate the bundled CLAUDE.md
 _PKG_ROOT = Path(__file__).resolve().parent
@@ -83,17 +89,47 @@ def load_workflow_classes(workflow_name: str) -> dict[str, type[BaseNode]]:
 
         for attr_name in dir(module):
             obj = getattr(module, attr_name)
-            if isinstance(obj, type) and issubclass(obj, BaseNode) and obj is not BaseNode:
+            if (
+                isinstance(obj, type)
+                and issubclass(obj, BaseNode)
+                and obj is not BaseNode
+                and obj.__module__ == module_name
+            ):
                 fq = f"{module_name}.{attr_name}"
                 registry[fq] = obj
     return registry
 
 
-def load_topology(workflow_name: str) -> dict:
-    topo_path = _cwd_workflows() / workflow_name / "topology.json"
-    if not topo_path.exists():
-        raise FileNotFoundError(f"Missing topology.json in workflows/{workflow_name}/")
-    return json.loads(topo_path.read_text())
+def build_workflow(registry: dict[str, type[BaseNode]]) -> dict:
+    """Build the workflow DAG from node class attributes (node_id, next_nodes).
+
+    Returns a dict with 'nodes' and 'edges' suitable for topological_sort.
+    """
+    # Map node_id -> (fq_name, cls) for all nodes that declare a node_id
+    by_id: dict[str, tuple[str, type[BaseNode]]] = {}
+    for fq_name, cls in registry.items():
+        nid = cls.node_id
+        if not nid:
+            continue
+        if nid in by_id:
+            other_fq = by_id[nid][0]
+            raise ValueError(f"Duplicate node_id '{nid}': {fq_name} and {other_fq}")
+        by_id[nid] = (fq_name, cls)
+
+    if not by_id:
+        raise ValueError("No nodes with a node_id found in this workflow")
+
+    nodes = [{"id": nid, "type": fq, "cls": cls} for nid, (fq, cls) in by_id.items()]
+    edges = []
+    for nid, (fq, cls) in by_id.items():
+        for target in cls.next_nodes:
+            if target not in by_id:
+                raise ValueError(
+                    f"Node '{nid}' references next_node '{target}' which doesn't exist"
+                )
+            edges.append({"source": nid, "target": target})
+
+    return {"nodes": nodes, "edges": edges}
 
 
 def topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
@@ -127,9 +163,9 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
 
     run_id = uuid.uuid4().hex[:12]
     registry = load_workflow_classes(workflow_name)
-    topo = load_topology(workflow_name)
-    sorted_ids = topological_sort(topo["nodes"], topo["edges"])
-    topo_lookup = {n["id"]: n for n in topo["nodes"]}
+    wf = build_workflow(registry)
+    sorted_ids = topological_sort(wf["nodes"], wf["edges"])
+    node_lookup = {n["id"]: n for n in wf["nodes"]}
 
     context: dict[str, Any] = {
         "workflow": workflow_name,
@@ -140,40 +176,47 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
     click.echo(f"[choola] Executing workflow: {workflow_name}  (run_id={run_id})")
     click.echo(f"[choola] Nodes in order: {sorted_ids}\n")
 
+    initial_payload = capture_payload(payload)
+    node_evals: list[dict] = []
+
     for node_id in sorted_ids:
-        topo_node = topo_lookup[node_id]
-        node_type = topo_node["type"]
-        node_config = topo_node.get("data", {}).get("config", {})
+        node_entry = node_lookup[node_id]
+        node_type = node_entry["type"]
+        cls = node_entry["cls"]
 
-        cls = registry.get(node_type)
-        if cls is None:
-            click.secho(f"  ERROR  Unknown node type: {node_type}", fg="red")
-            raise ValueError(f"Unknown node type: {node_type}")
-
-        instance = cls(node_id=node_id, config=node_config)
+        instance = cls()
         instance._db_get_global = get_global_async
         instance._db_set_global = set_global_async
         instance._db_get_credential = get_credential_async
 
         click.secho(f"  RUNNING  {cls.name} ({node_id})", fg="yellow")
         now = datetime.now(timezone.utc).isoformat()
+        payload_before = capture_payload(payload)
 
         try:
             payload = await instance.execute(payload, context)
             finished = datetime.now(timezone.utc).isoformat()
             click.secho(f"  COMPLETED  {cls.name} -> {json.dumps(payload, default=str)}", fg="green")
             insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload, payload_out=payload, started_at=now, finished_at=finished)
+                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished)
+            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(payload)))
         except Exception as exc:
             finished = datetime.now(timezone.utc).isoformat()
+            tb = traceback.format_exc()
             click.secho(f"  ERROR  {cls.name}: {exc}", fg="red")
             insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
-                           payload_in=payload, error=traceback.format_exc(),
+                           payload_in=payload_before, error=tb,
                            started_at=now, finished_at=finished)
+            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished, payload_before, error=tb))
+            evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "ERROR", error=tb)
+            save_evaluation(workflow_name, evaluation)
             raise
 
+    evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "COMPLETED", payload)
+    eval_path = save_evaluation(workflow_name, evaluation)
     click.echo(f"\n[choola] Workflow completed. Final payload:")
     click.echo(json.dumps(payload, indent=2, default=str))
+    click.echo(f"[choola] Evaluation saved: {eval_path}")
     return payload
 
 
@@ -240,13 +283,11 @@ def create(workflow_name: str):
     nodes_dir = workflow_dir / "nodes"
     nodes_dir.mkdir(parents=True)
     (nodes_dir / "__init__.py").write_text("")
-    (workflow_dir / "topology.json").write_text(
-        json.dumps({"nodes": [], "edges": []}, indent=2)
-    )
+    (workflow_dir / "files").mkdir()
     click.secho(f"Created workflow: workflows/{workflow_name}/", fg="green")
-    click.echo(f"  workflows/{workflow_name}/topology.json")
     click.echo(f"  workflows/{workflow_name}/nodes/")
-    click.echo(f"\nOpen http://localhost:5000 to edit the workflow in the UI.")
+    click.echo(f"  workflows/{workflow_name}/files/")
+    click.echo(f"\nAdd node files to nodes/ and run `choola run {workflow_name}` to execute.")
 
 
 @main.command("list")
@@ -261,17 +302,11 @@ def list_workflows():
         if not d.is_dir():
             continue
         found = True
-        topo_path = d / "topology.json"
-        if topo_path.exists():
-            topo = json.loads(topo_path.read_text())
-            n_nodes = len(topo.get("nodes", []))
-            status = topo.get("status", "draft")
-            status_color = "green" if status == "published" else "yellow"
-            click.echo(f"  {d.name:<30}", nl=False)
-            click.secho(f"[{status}]", fg=status_color, nl=False)
-            click.echo(f"  {n_nodes} node(s)")
-        else:
-            click.secho(f"  {d.name}  (no topology.json)", fg="yellow")
+        nodes_dir = d / "nodes"
+        n_nodes = 0
+        if nodes_dir.exists():
+            n_nodes = sum(1 for f in nodes_dir.glob("*.py") if not f.name.startswith("_"))
+        click.echo(f"  {d.name:<30}  {n_nodes} node(s)")
     if not found:
         click.echo("  No workflows found.")
 
@@ -300,13 +335,23 @@ def nodes(workflow_name: str | None):
             click.echo(f"  {cls.name:<25}  [{cls.category}]  {fq}")
     else:
         # List core nodes only
+        from choola.core.nodes.trigger import Trigger
         import choola.core.nodes.form_trigger as _ft
         import choola.core.nodes.webhook_trigger as _wt
         import choola.core.nodes.llm as _llm
-        for mod in (_ft, _wt, _llm):
+        import choola.core.nodes.manual_trigger as _mt
+        seen = set()
+        skip = {BaseNode, Trigger}
+        for mod in (_ft, _wt, _llm, _mt):
             for attr in dir(mod):
                 obj = getattr(mod, attr)
-                if isinstance(obj, type) and issubclass(obj, BaseNode) and obj is not BaseNode:
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, BaseNode)
+                    and obj not in skip
+                    and obj not in seen
+                ):
+                    seen.add(obj)
                     click.echo(f"  {obj.name:<25}  [{obj.category}]  (core)")
 
 

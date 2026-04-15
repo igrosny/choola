@@ -20,10 +20,35 @@ The abstract base class for ALL nodes. Provides:
 - `ui_metadata()` — returns node metadata for the frontend
 
 **Required class attributes:**
+- `node_id` (str) — unique identifier within a workflow (snake_case). Used to wire `next_nodes` edges.
 - `name` (str) — human-readable name for the UI
 - `category` (str) — sidebar grouping (e.g. "input", "processing", "output")
 - `description` (str) — tooltip text
 - `fields` (list[dict]) — input field definitions for the UI. Each dict has at minimum `name` and `type`
+- `next_nodes` (list[str]) — list of `node_id` values this node passes output to. `[]` for terminal nodes.
+
+## Trigger (`choola.core.nodes.trigger.Trigger`)
+
+**Category:** input
+**Purpose:** Abstract base class for all trigger nodes. Every workflow must have exactly one node that inherits from Trigger as its entry point.
+
+**Fields:** none (subclasses define their own)
+
+**Output payload:** adds `triggered_at` (ISO timestamp)
+
+**Notes:**
+- WebhookTrigger, FormTrigger, and ManualTrigger all extend this class.
+- The engine uses `isinstance(node, Trigger)` to identify the workflow's entry point.
+- Do not instantiate `Trigger` directly — use a subclass.
+
+## ManualTrigger (`choola.core.nodes.manual_trigger.ManualTrigger`)
+
+**Category:** input
+**Purpose:** Starts a workflow manually via the UI "Run" button or `choola run` CLI command. No external event needed.
+
+**Fields:** none
+
+**Output payload:** adds `triggered_at` (ISO timestamp), `trigger_type` = `"manual"`
 
 ## WebhookTrigger (`choola.core.nodes.webhook_trigger.WebhookTrigger`)
 

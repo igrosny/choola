@@ -43,6 +43,12 @@ import anthropic
 from flask import Flask, Response, jsonify, request
 
 from choola.core.base_node import BaseNode
+from choola.evaluations import (
+    build_evaluation,
+    capture_payload,
+    make_node_eval,
+    save_evaluation,
+)
 from choola.database import (
     DB_PATH,
     delete_credential,
@@ -107,6 +113,7 @@ def _import_nodes_from(directory: Path, *, relative_root: Path, workflow_name: s
                 isinstance(obj, type)
                 and issubclass(obj, BaseNode)
                 and obj is not BaseNode
+                and obj.__module__ == module_name
             ):
                 fq_name = f"{module_name}.{attr_name}"
                 node_registry[fq_name] = obj
@@ -128,8 +135,42 @@ def discover_nodes() -> None:
         _import_nodes_from(WORKFLOWS_DIR, relative_root=CWD)
 
 
+def build_workflow(workflow_name: str) -> dict:
+    """Build the workflow DAG from node class attributes (node_id, next_nodes).
+
+    Returns a dict with 'nodes' and 'edges' suitable for topological_sort.
+    """
+    classes = workflow_nodes.get(workflow_name, [])
+    by_id: dict[str, tuple[str, type[BaseNode]]] = {}
+    for cls in classes:
+        nid = cls.node_id
+        if not nid:
+            continue
+        # Find fq_name from node_registry
+        fq_name = next((fq for fq, c in node_registry.items() if c is cls), "")
+        if nid in by_id:
+            other_fq = by_id[nid][0]
+            raise ValueError(f"Duplicate node_id '{nid}': {fq_name} and {other_fq}")
+        by_id[nid] = (fq_name, cls)
+
+    if not by_id:
+        raise ValueError(f"No nodes with a node_id found in workflow '{workflow_name}'")
+
+    nodes = [{"id": nid, "type": fq, "cls": cls} for nid, (fq, cls) in by_id.items()]
+    edges = []
+    for nid, (fq, cls) in by_id.items():
+        for target in cls.next_nodes:
+            if target not in by_id:
+                raise ValueError(
+                    f"Node '{nid}' references next_node '{target}' which doesn't exist"
+                )
+            edges.append({"source": nid, "target": target})
+
+    return {"nodes": nodes, "edges": edges}
+
+
 # ------------------------------------------------------------------
-# Topology helpers
+# Topology helpers (UI-only — stores canvas positions and layout)
 # ------------------------------------------------------------------
 def load_topology(workflow_name: str) -> dict:
     topo_path = WORKFLOWS_DIR / workflow_name / "topology.json"
@@ -193,10 +234,9 @@ def run_workflow(workflow_name: str, payload: dict[str, Any], run_id: str | None
 
 
 async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_id: str) -> dict:
-    topo = load_topology(workflow_name)
-    sorted_ids = topological_sort(topo["nodes"], topo["edges"])
-
-    topo_lookup = {n["id"]: n for n in topo["nodes"]}
+    wf = build_workflow(workflow_name)
+    sorted_ids = topological_sort(wf["nodes"], wf["edges"])
+    node_lookup = {n["id"]: n for n in wf["nodes"]}
 
     context: dict[str, Any] = {
         "workflow": workflow_name,
@@ -205,44 +245,46 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
     }
 
     results: dict[str, Any] = {}
+    initial_payload = capture_payload(payload)
+    node_evals: list[dict] = []
 
     for node_id in sorted_ids:
-        topo_node = topo_lookup[node_id]
-        node_type = topo_node["type"]
-        node_config = topo_node.get("data", {}).get("config", {})
+        node_entry = node_lookup[node_id]
+        node_type = node_entry["type"]
+        cls = node_entry["cls"]
 
-        cls = node_registry.get(node_type)
-        if cls is None:
-            error_msg = f"Unknown node type: {node_type}"
-            _emit(run_id, "node_status", {"node_id": node_id, "status": "ERROR", "error": error_msg})
-            insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR", error=error_msg)
-            raise ValueError(error_msg)
-
-        instance = cls(node_id=node_id, config=node_config)
+        instance = cls()
         instance._db_get_global = get_global_async
         instance._db_set_global = set_global_async
         instance._db_get_credential = get_credential_async
 
         now = datetime.now(timezone.utc).isoformat()
+        payload_before = capture_payload(payload)
         _emit(run_id, "node_status", {"node_id": node_id, "status": "RUNNING", "payload": payload})
-        insert_run_log(run_id, workflow_name, node_id, node_type, "RUNNING", payload_in=payload, started_at=now)
+        insert_run_log(run_id, workflow_name, node_id, node_type, "RUNNING", payload_in=payload_before, started_at=now)
 
         try:
             payload = await instance.execute(payload, context)
             finished = datetime.now(timezone.utc).isoformat()
             _emit(run_id, "node_status", {"node_id": node_id, "status": "COMPLETED", "payload": payload})
             insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload, payload_out=payload, started_at=now, finished_at=finished)
+                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished)
+            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(payload)))
             results[node_id] = payload
         except Exception as exc:
             finished = datetime.now(timezone.utc).isoformat()
             tb = traceback.format_exc()
             _emit(run_id, "node_status", {"node_id": node_id, "status": "ERROR", "error": str(exc)})
             insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
-                           payload_in=payload, error=tb, started_at=now, finished_at=finished)
+                           payload_in=payload_before, error=tb, started_at=now, finished_at=finished)
+            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished, payload_before, error=tb))
+            evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "ERROR", error=tb)
+            save_evaluation(workflow_name, evaluation)
             _emit(run_id, "run_complete", {"status": "ERROR", "error": str(exc)})
             raise
 
+    evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "COMPLETED", payload)
+    save_evaluation(workflow_name, evaluation)
     _emit(run_id, "run_complete", {"status": "COMPLETED", "payload": payload})
     return {"status": "COMPLETED", "payload": payload, "run_id": run_id}
 
@@ -265,18 +307,13 @@ def api_workflows():
     for d in sorted(WORKFLOWS_DIR.iterdir()):
         if not d.is_dir():
             continue
-        topo_path = d / "topology.json"
+        nodes_dir = d / "nodes"
         node_count = 0
-        status = "draft"
-        if topo_path.exists():
-            topo = json.loads(topo_path.read_text())
-            node_count = len(topo.get("nodes", []))
-            status = topo.get("status", "draft")
+        if nodes_dir.exists():
+            node_count = sum(1 for f in nodes_dir.glob("*.py") if not f.name.startswith("_"))
         result.append({
             "name": d.name,
             "nodes": node_count,
-            "has_topology": topo_path.exists(),
-            "status": status,
         })
     return jsonify(result)
 
@@ -298,75 +335,53 @@ def api_create_workflow():
     nodes_dir = workflow_dir / "nodes"
     nodes_dir.mkdir(parents=True)
     (nodes_dir / "__init__.py").write_text("")
-    (workflow_dir / "topology.json").write_text(json.dumps({"nodes": [], "edges": []}, indent=2))
 
     return jsonify({"ok": True, "name": name}), 201
 
 
 @app.route("/api/workflows/<name>/topology", methods=["GET", "PUT"])
 def api_topology(name: str):
+    """UI-only: stores canvas positions and layout. The real DAG comes from node classes."""
     if request.method == "GET":
-        return jsonify(load_topology(name))
-    current = load_topology(name)
-    if current.get("status") == "published":
-        return jsonify({"error": "Cannot edit a published workflow. Unpublish it first."}), 403
+        # Merge node-declared DAG with UI positions from topology.json
+        ui_data = load_topology(name)
+        try:
+            wf = build_workflow(name)
+            positions = {n.get("id"): n.get("position", {}) for n in ui_data.get("nodes", [])}
+            nodes = []
+            for node in wf["nodes"]:
+                nid = node["id"]
+                cls = node["cls"]
+                nodes.append({
+                    "id": nid,
+                    "type": node["type"],
+                    "position": positions.get(nid, {"x": 250, "y": 250}),
+                    "data": {"label": cls.name, "config": {}},
+                })
+            return jsonify({"nodes": nodes, "edges": wf["edges"]})
+        except ValueError:
+            return jsonify({"nodes": [], "edges": []})
+    # PUT — save UI positions only
     data = request.get_json(force=True)
-    data["status"] = current.get("status", "draft")
     save_topology(name, data)
-    register_webhooks()
     return jsonify({"ok": True})
-
-
-@app.route("/api/workflows/<name>/status", methods=["PUT"])
-def api_workflow_status(name: str):
-    """Toggle workflow status between draft and published."""
-    workflow_dir = WORKFLOWS_DIR / name
-    if not workflow_dir.exists():
-        return jsonify({"error": f"Workflow '{name}' not found"}), 404
-    body = request.get_json(force=True)
-    new_status = body.get("status")
-    if new_status not in ("draft", "published"):
-        return jsonify({"error": "Status must be 'draft' or 'published'"}), 400
-    topo = load_topology(name)
-    topo["status"] = new_status
-    save_topology(name, topo)
-    register_webhooks()
-    return jsonify({"ok": True, "status": new_status})
 
 
 @app.route("/api/workflows/<name>/refresh", methods=["POST"])
 def api_refresh_workflow(name: str):
-    """Hard refresh: re-discover nodes, prune invalid nodes/edges, preserve positions."""
+    """Hard refresh: re-discover nodes from Python files."""
     workflow_dir = WORKFLOWS_DIR / name
     if not workflow_dir.exists():
         return jsonify({"error": f"Workflow '{name}' not found"}), 404
 
     discover_nodes()
-
-    topo = load_topology(name)
-
-    valid_nodes = []
-    valid_ids = set()
-    for node in topo.get("nodes", []):
-        node_type = node.get("type", "")
-        if node_type in node_registry:
-            cls = node_registry[node_type]
-            node.setdefault("data", {})
-            node["data"]["label"] = cls.name
-            valid_nodes.append(node)
-            valid_ids.add(node["id"])
-
-    valid_edges = [
-        e for e in topo.get("edges", [])
-        if e.get("source") in valid_ids and e.get("target") in valid_ids
-    ]
-
-    topo["nodes"] = valid_nodes
-    topo["edges"] = valid_edges
-    save_topology(name, topo)
     register_webhooks()
 
-    return jsonify(topo)
+    try:
+        wf = build_workflow(name)
+        return jsonify({"nodes": [{"id": n["id"], "type": n["type"]} for n in wf["nodes"]], "edges": wf["edges"]})
+    except ValueError as e:
+        return jsonify({"nodes": [], "edges": [], "warning": str(e)})
 
 
 @app.route("/api/nodes/<path:node_type>/source", methods=["GET", "PUT"])
@@ -393,12 +408,6 @@ def api_node_source(node_type: str):
         return jsonify({"source": file_path.read_text(), "path": str(file_path.relative_to(display_root))})
 
     # PUT — save updated source
-    parts_list = module_path.split(".")
-    if len(parts_list) >= 2 and parts_list[0] == "workflows":
-        wf_name = parts_list[1]
-        wf_topo = load_topology(wf_name)
-        if wf_topo.get("status") == "published":
-            return jsonify({"error": "Cannot edit nodes of a published workflow. Unpublish it first."}), 403
     data = request.get_json(force=True)
     source = data.get("source")
     if source is None:
@@ -616,24 +625,6 @@ CHAT_TOOLS = [
             "required": ["filename", "source"],
         },
     },
-    {
-        "name": "add_node_to_topology",
-        "description": "Add a node instance to the workflow canvas so it appears visually.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "node_id": {"type": "string", "description": "Unique node ID (snake_case)"},
-                "node_type": {
-                    "type": "string",
-                    "description": "Fully-qualified type, e.g. workflows.my_wf.nodes.fetch_api.FetchApi",
-                },
-                "label": {"type": "string", "description": "Display label for the node"},
-                "position_x": {"type": "number", "description": "Canvas X position (default 250)"},
-                "position_y": {"type": "number", "description": "Canvas Y position (default 250)"},
-            },
-            "required": ["node_id", "node_type", "label"],
-        },
-    },
 ]
 
 # Read project specification — prefer the one in the user's project, fall back to the bundled copy.
@@ -672,7 +663,6 @@ def _gather_core_nodes() -> str:
 
 def _build_chat_system(workflow_name: str) -> list[dict]:
     """Build the system prompt as content blocks with prompt caching."""
-    topo = load_topology(workflow_name)
     workflow_dir = WORKFLOWS_DIR / workflow_name
 
     node_sources = {}
@@ -721,18 +711,26 @@ def _build_chat_system(workflow_name: str) -> list[dict]:
 - The `execute` method is async and receives (payload: dict, context: dict) -> dict.
 - Declare class attributes: name, category, description, fields.
 - Valid categories: input, processing, routing, output, general.
-- Use `create_node` to make new node files and `add_node_to_topology` to place them on the canvas.
-- Use `edit_node` to modify existing node files.
-- When creating a node, also call `add_node_to_topology` to add it to the canvas.
-- The node_type for topology is: workflows.{workflow_name}.nodes.<filename_without_py>.<ClassName>
+- Use `create_node` to make new node files. Use `edit_node` to modify existing node files.
+- Every node must declare a `node_id` class attribute (unique within the workflow).
+- Use `next_nodes` class attribute (list of node_id strings) to define the DAG edges.
+- No topology.json needed — the DAG is built from node class attributes.
 - Keep nodes simple and focused on a single task.
-- You can reference core nodes by their type (e.g. core.nodes.webhook_trigger.WebhookTrigger) when adding them to topologies.
 - Be concise in your responses."""
+
+    try:
+        wf = build_workflow(workflow_name)
+        wf_summary = json.dumps(
+            {"nodes": [{"id": n["id"], "type": n["type"]} for n in wf["nodes"]], "edges": wf["edges"]},
+            indent=2,
+        )
+    except ValueError:
+        wf_summary = "(no nodes with node_id found yet)"
 
     dynamic_block = f"""## Current workflow: {workflow_name}
 
-## Current topology
-{json.dumps(topo, indent=2)}
+## Current DAG (derived from node classes)
+{wf_summary}
 
 ## All registered node types
 {registered_listing}
@@ -785,26 +783,6 @@ def _handle_tool_call(workflow_name: str, tool_name: str, tool_input: dict) -> d
         filepath.write_text(source)
         discover_nodes()
         return {"ok": True, "path": str(filepath.relative_to(CWD))}
-
-    elif tool_name == "add_node_to_topology":
-        topo = load_topology(workflow_name)
-        node_id = tool_input["node_id"]
-        if any(n["id"] == node_id for n in topo["nodes"]):
-            return {"error": f"Node ID '{node_id}' already exists in topology"}
-        topo["nodes"].append({
-            "id": node_id,
-            "type": tool_input["node_type"],
-            "position": {
-                "x": tool_input.get("position_x", 250),
-                "y": tool_input.get("position_y", 250),
-            },
-            "data": {
-                "label": tool_input["label"],
-                "config": {},
-            },
-        })
-        save_topology(workflow_name, topo)
-        return {"ok": True, "node_id": node_id}
 
     return {"error": f"Unknown tool: {tool_name}"}
 
@@ -909,8 +887,14 @@ def _is_webhook_trigger(node_type: str) -> bool:
     return cls is not None and issubclass(cls, WebhookTrigger)
 
 
+def _is_manual_trigger(node_type: str) -> bool:
+    from choola.core.nodes.manual_trigger import ManualTrigger
+    cls = _resolve_node_class(node_type)
+    return cls is not None and issubclass(cls, ManualTrigger)
+
+
 def register_webhooks() -> None:
-    """Scan published workflow topologies for WebhookTrigger and FormTrigger nodes."""
+    """Scan workflows for WebhookTrigger and FormTrigger nodes."""
     _webhook_routes.clear()
     _form_routes.clear()
     if not WORKFLOWS_DIR.exists():
@@ -919,15 +903,16 @@ def register_webhooks() -> None:
     for workflow_dir in sorted(WORKFLOWS_DIR.iterdir()):
         if not workflow_dir.is_dir():
             continue
-        topo = load_topology(workflow_dir.name)
-        if topo.get("status") != "published":
+        try:
+            wf = build_workflow(workflow_dir.name)
+        except ValueError:
             continue
-        for node in topo.get("nodes", []):
+        for node in wf.get("nodes", []):
             node_type = node.get("type", "")
-            config = node.get("data", {}).get("config", {})
+            cls = node["cls"]
 
             if _is_webhook_trigger(node_type):
-                instance = _resolve_node_class(node_type)(config=config)
+                instance = cls()
                 path = instance.config.get("path", "").strip()
                 method = instance.config.get("method", "POST").upper()
                 response_mode = instance.config.get("response_mode", "after_workflow")
@@ -939,7 +924,7 @@ def register_webhooks() -> None:
                 _webhook_routes[(path, method)] = (workflow_dir.name, response_mode)
 
             elif _is_form_trigger(node_type):
-                instance = _resolve_node_class(node_type)(config=config)
+                instance = cls()
                 path = instance.config.get("path", "").strip()
                 if not path:
                     continue
@@ -956,30 +941,33 @@ _dev_test_sessions: dict[str, str] = {}
 
 
 def _find_trigger(workflow_name: str) -> tuple[str | None, dict, str | None]:
-    topo = load_topology(workflow_name)
-    for node in topo.get("nodes", []):
+    try:
+        wf = build_workflow(workflow_name)
+    except ValueError:
+        return None, {}, None
+    for node in wf.get("nodes", []):
         node_type = node.get("type", "")
-        config = node.get("data", {}).get("config", {})
         if _is_webhook_trigger(node_type):
-            return "webhook", config, node_type
+            cls = node["cls"]
+            instance = cls()
+            return "webhook", instance.config, node_type
         elif _is_form_trigger(node_type):
-            return "form", config, node_type
+            cls = node["cls"]
+            instance = cls()
+            return "form", instance.config, node_type
+        elif _is_manual_trigger(node_type):
+            cls = node["cls"]
+            instance = cls()
+            return "manual", instance.config, node_type
     return None, {}, None
 
 
 @app.route("/api/workflows/<name>/trigger-info")
 def api_trigger_info(name: str):
     trigger_type, config, node_type_str = _find_trigger(name)
-    if node_type_str:
-        cls = _resolve_node_class(node_type_str)
-        if cls:
-            instance = cls(config=config)
-            config = instance.config
-    topo = load_topology(name)
     return jsonify({
         "trigger_type": trigger_type,
         "config": config,
-        "status": topo.get("status", "draft"),
     })
 
 
