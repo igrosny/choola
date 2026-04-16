@@ -12,6 +12,32 @@ The idea is simple: you build workflows from self-contained Python nodes, connec
 
 ---
 
+## Getting Started (End Users)
+
+If you just want to use Choola to build workflows (not develop the engine), this is all you need:
+
+```bash
+pip install choola
+```
+
+Then, in any empty directory:
+
+```bash
+choola init          # Creates workflows/ folder and config
+choola start         # Opens the visual editor at http://localhost:5000
+```
+
+From there you can create workflows in the UI, add nodes, connect them, and run them. To scaffold a workflow from the command line:
+
+```bash
+choola create my-workflow                                  # Create a new workflow
+choola run my-workflow --payload '{"key": "value"}'        # Run it headlessly
+```
+
+If you use [Claude Code](https://claude.ai/code), you can describe what you want and let it build the workflow for you — see [Using with Claude Code](#using-with-claude-code).
+
+---
+
 ## What It's For
 
 Choola was built for beginner developers who want to:
@@ -29,19 +55,19 @@ It is not trying to be n8n or Airflow. It's trying to be the simplest possible o
 
 A **workflow** is a folder containing:
 
-- `topology.json` — a DAG (directed acyclic graph) of nodes and the edges between them
-- `nodes/*.py` — one Python file per node
+- `nodes/*.py` — one Python file per node, each declaring its own `node_id` and `next_nodes`
+- `topology.json` — visual layout for the UI editor (canvas positions and node config overrides)
 
-Each node receives a `payload` dict, does one thing, and returns the (possibly modified) payload to the next node. The engine topologically sorts the nodes and executes them in order.
+The execution graph (DAG) is defined entirely in code. Each node's `next_nodes` attribute declares where its output goes. The engine discovers all node files, builds the graph from those declarations, topologically sorts them, and executes in order. `topology.json` only stores where nodes appear on the canvas and any per-instance configuration — it is not used for execution order.
 
 ```
 workflows/my_workflow/
-├── topology.json
+├── topology.json          # UI layout + config (auto-managed by the editor)
 └── nodes/
     ├── __init__.py
-    ├── fetch_data.py
-    ├── summarize.py
-    └── send_email.py
+    ├── fetch_data.py      # node_id="fetch_data", next_nodes=["summarize"]
+    ├── summarize.py       # node_id="summarize", next_nodes=["send_email"]
+    └── send_email.py      # node_id="send_email", next_nodes=[]
 ```
 
 ---
@@ -133,9 +159,11 @@ from choola.core.base_node import BaseNode
 
 
 class MyNodeName(BaseNode):
+    node_id = "my_node_name"
     name = "My Node Name"
     category = "processing"
     description = "Does one specific thing to the payload."
+    next_nodes = ["next_node_id"]  # node_ids of downstream nodes, [] for terminal
     fields = [
         {"name": "threshold", "type": "number", "default": 10},
     ]
@@ -150,6 +178,7 @@ class MyNodeName(BaseNode):
 - **Self-contained** — all logic in one file, no cross-node imports
 - **JSON in, JSON out** — communicate only through the `payload` dict
 - **Docstring required** — the `@choola-node` markers make nodes grep-discoverable
+- **DAG in code** — each node declares `node_id` (unique within the workflow) and `next_nodes` (list of downstream `node_id` values). The engine builds the execution graph from these — not from `topology.json`
 
 ### Node categories
 
