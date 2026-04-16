@@ -175,6 +175,25 @@ await self.set_global("my_key", "new_value")
 
 Core nodes are built into the `choola` package. **Never reference them directly in `topology.json`** — instead, create a thin wrapper class in your workflow's `nodes/` directory that extends the core node.
 
+Every workflow must have exactly one trigger node as its entry point.
+
+### ManualTrigger
+
+Starts a workflow manually via the UI or CLI. No external event needed — use this when the workflow doesn't need a webhook or form to kick it off.
+
+```python
+from choola.core.nodes.manual_trigger import ManualTrigger
+
+class Start(ManualTrigger):
+    pass
+```
+
+No configuration fields.
+
+**Output payload:** `{ triggered_at: "<ISO timestamp>", trigger_type: "manual" }`
+
+---
+
 ### WebhookTrigger
 
 Starts a workflow when an HTTP request hits a registered endpoint.
@@ -258,6 +277,31 @@ class Summarize(LLM):
 
 ---
 
+### Gmail
+
+Sends an email via the Gmail API using OAuth2 credentials.
+
+```python
+from choola.core.nodes.gmail import Gmail
+
+class SendEmail(Gmail):
+    pass
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `credential_name` | str | Name of the stored Gmail OAuth2 credential |
+| `to_email` | str | Recipient email address |
+| `subject` | str | Subject template; use `{key}` to interpolate payload values |
+| `body` | textarea | Body template; use `{key}` to interpolate payload values |
+| `body_type` | select | `plain` or `html` (default: plain) |
+
+**Output payload:** adds `email_sent`, `email_to`, `email_subject` to the existing payload
+
+**Setup:** Gmail requires OAuth2. Go to Settings > Credentials, add a Gmail credential, and complete the OAuth2 flow. The server handles the flow at `/api/oauth2/gmail/start` and `/api/oauth2/gmail/callback`.
+
+---
+
 ## Credentials
 
 API keys and OAuth tokens are stored encrypted in the SQLite database and never hardcoded.
@@ -287,12 +331,35 @@ api_key = cred["value"]
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/nodes` | List all registered node types |
+| GET | `/api/nodes/<node_type>/fields` | Get field definitions for a node |
+| GET | `/api/nodes/<node_type>/source` | Read node source code |
+| PUT | `/api/nodes/<node_type>/source` | Update node source code |
 | GET | `/api/workflows` | List all workflows |
 | POST | `/api/workflows` | Create a new workflow |
 | GET | `/api/workflows/<name>/topology` | Get workflow topology |
 | PUT | `/api/workflows/<name>/topology` | Update workflow topology |
 | POST | `/api/workflows/<name>/run` | Execute a workflow |
 | GET | `/api/workflows/<name>/stream/<run_id>` | SSE stream for live run status |
+| POST | `/api/workflows/<name>/refresh` | Re-discover nodes from disk |
+| POST | `/api/workflows/<name>/chat` | Chat with Claude about the workflow (SSE) |
+| GET | `/api/workflows/<name>/trigger-info` | Get trigger type and config |
+| GET | `/api/credentials` | List all credentials (values masked) |
+| POST | `/api/credentials` | Create/update credential |
+| DELETE | `/api/credentials/<name>` | Delete credential |
+| POST | `/api/oauth2/gmail/start` | Initiate Gmail OAuth2 flow |
+| GET | `/api/oauth2/gmail/callback` | Gmail OAuth2 callback |
+
+---
+
+## Evaluations
+
+Every workflow run automatically saves an evaluation file for debugging:
+
+```
+workflows/<name>/evaluations/<run_id>.json
+```
+
+Each evaluation captures the full execution trace: initial and final payloads, per-node timing, inputs, outputs, and any errors. Use these to inspect exactly what happened at each step.
 
 ---
 
@@ -303,22 +370,28 @@ choola/                        # The pip-installable package
 ├── cli.py                     # CLI entry point
 ├── server.py                  # Flask API + serves the React frontend
 ├── database.py                # SQLite store (globals + run logs + credentials)
+├── evaluations.py             # Run evaluation storage (one JSON per run)
 ├── core/
 │   ├── base_node.py           # Abstract base class for all nodes
 │   └── nodes/                 # Built-in core nodes
+│       ├── trigger.py         # Base Trigger class
+│       ├── manual_trigger.py
 │       ├── webhook_trigger.py
 │       ├── form_trigger.py
-│       └── llm.py
+│       ├── llm.py
+│       └── gmail.py
 └── static/                    # Built frontend (generated — not in source)
 
-frontend/                      # React + React Flow visual editor (Vite)
+frontend/                      # React + XyFlow visual editor (Vite)
 
 workflows/                     # Your workflows live here (created by choola create)
 └── <workflow_name>/
     ├── topology.json
-    └── nodes/
-        ├── __init__.py
-        └── <node>.py
+    ├── nodes/
+    │   ├── __init__.py
+    │   └── <node>.py
+    ├── evaluations/           # Auto-generated run traces
+    └── files/                 # Binary/generated files
 ```
 
 ---

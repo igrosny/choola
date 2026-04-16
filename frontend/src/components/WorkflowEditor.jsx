@@ -645,15 +645,14 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       if (!credForm.name || !credForm.client_id || !credForm.client_secret) {
         alert('Name, Client ID, and Client Secret are required'); return;
       }
-      const endpoint = credForm.provider === 'gmail' ? '/api/oauth2/gmail/start' : '/api/oauth2/google/start';
-      const res = await fetch(endpoint, {
+      const res = await fetch('/api/oauth2/google/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: credForm.name, client_id: credForm.client_id, client_secret: credForm.client_secret }),
+        body: JSON.stringify({ name: credForm.name, client_id: credForm.client_id, client_secret: credForm.client_secret, provider: credForm.provider }),
       });
       if (!res.ok) { const d = await res.json(); alert(d.error || 'Failed'); return; }
       const { auth_url } = await res.json();
-      window.open(auth_url, credForm.provider + '_oauth2', 'width=500,height=600');
+      window.open(auth_url, 'google_oauth2', 'width=500,height=600');
       const onMessage = (e) => {
         if (e.data === 'oauth2_done') {
           window.removeEventListener('message', onMessage);
