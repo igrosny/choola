@@ -641,18 +641,19 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   };
 
   const handleSaveCredential = async () => {
-    if (credForm.provider === 'google_oauth2') {
+    if (credForm.provider === 'google_oauth2' || credForm.provider === 'gmail') {
       if (!credForm.name || !credForm.client_id || !credForm.client_secret) {
         alert('Name, Client ID, and Client Secret are required'); return;
       }
-      const res = await fetch('/api/oauth2/google/start', {
+      const endpoint = credForm.provider === 'gmail' ? '/api/oauth2/gmail/start' : '/api/oauth2/google/start';
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: credForm.name, client_id: credForm.client_id, client_secret: credForm.client_secret }),
       });
       if (!res.ok) { const d = await res.json(); alert(d.error || 'Failed'); return; }
       const { auth_url } = await res.json();
-      window.open(auth_url, 'google_oauth2', 'width=500,height=600');
+      window.open(auth_url, credForm.provider + '_oauth2', 'width=500,height=600');
       const onMessage = (e) => {
         if (e.data === 'oauth2_done') {
           window.removeEventListener('message', onMessage);
@@ -990,6 +991,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                     claude: { bg: 'rgba(217,119,87,0.1)', color: '#c6613f', border: 'rgba(217,119,87,0.2)' },
                     google: { bg: 'rgba(44,132,219,0.1)', color: '#1b67b2', border: 'rgba(44,132,219,0.2)' },
                     google_oauth2: { bg: 'rgba(44,132,219,0.1)', color: '#1b67b2', border: 'rgba(44,132,219,0.2)' },
+                    gmail: { bg: 'rgba(234,67,53,0.1)', color: '#c5221f', border: 'rgba(234,67,53,0.2)' },
                   };
                   const pc = providerColors[c.provider] || { bg: '#f5f4ed', color: '#3d3d3a', border: 'rgba(31,30,29,0.15)' };
                   return (
@@ -1031,8 +1033,9 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                 <option value="gemini">Gemini</option>
                 <option value="google">Google API Key</option>
                 <option value="google_oauth2">Google OAuth2</option>
+                <option value="gmail">Gmail</option>
               </select>
-              {credForm.provider === 'google_oauth2' ? (
+              {(credForm.provider === 'google_oauth2' || credForm.provider === 'gmail') ? (
                 <>
                   <input
                     placeholder="Client ID"
@@ -1061,7 +1064,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                 onClick={handleSaveCredential}
                 style={{ ...btnPrimary, width: '100%', justifyContent: 'center' }}
               >
-                {credForm.provider === 'google_oauth2' ? 'Connect with Google' : 'Save credential'}
+                {credForm.provider === 'google_oauth2' ? 'Connect with Google' : credForm.provider === 'gmail' ? 'Connect with Gmail' : 'Save credential'}
               </button>
             </div>
           </div>

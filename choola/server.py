@@ -500,6 +500,7 @@ _oauth2_pending: dict[str, dict] = {}
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_DRIVE_SCOPES = "https://www.googleapis.com/auth/drive.file"
+GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
 
 @app.route("/api/oauth2/google/start", methods=["POST"])
@@ -579,6 +580,94 @@ def api_oauth2_google_callback():
     align-items:center;justify-content:center;height:100vh;margin:0">
     <div style="text-align:center">
       <h2 style="color:#4ade80">Connected to Google</h2>
+      <p>Credential saved. You can close this tab.</p>
+      <script>if(window.opener){window.opener.postMessage('oauth2_done','*')}</script>
+    </div></body></html>
+    """
+
+
+# ------------------------------------------------------------------
+# Gmail OAuth2
+# ------------------------------------------------------------------
+
+@app.route("/api/oauth2/gmail/start", methods=["POST"])
+def api_oauth2_gmail_start():
+    data = request.get_json(force=True)
+    name = data.get("name", "").strip()
+    client_id = data.get("client_id", "").strip()
+    client_secret = data.get("client_secret", "").strip()
+
+    if not name or not client_id or not client_secret:
+        return jsonify({"error": "name, client_id, and client_secret are required"}), 400
+    if not all(c.isalnum() or c in ("_", "-") for c in name):
+        return jsonify({"error": "name must be alphanumeric (underscores/hyphens allowed)"}), 400
+
+    state = uuid.uuid4().hex
+    _oauth2_pending[state] = {
+        "name": name,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "provider": "gmail",
+    }
+
+    callback_url = request.host_url.rstrip("/") + "/api/oauth2/gmail/callback"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": callback_url,
+        "response_type": "code",
+        "scope": GMAIL_SEND_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    from urllib.parse import urlencode
+    auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+    return jsonify({"auth_url": auth_url})
+
+
+@app.route("/api/oauth2/gmail/callback")
+def api_oauth2_gmail_callback():
+    code = request.args.get("code")
+    state = request.args.get("state")
+    error = request.args.get("error")
+
+    if error:
+        return f"<h2>OAuth2 Error</h2><p>{error}</p>", 400
+
+    if not code or not state or state not in _oauth2_pending:
+        return "<h2>Invalid OAuth2 callback</h2><p>Missing or expired state.</p>", 400
+
+    pending = _oauth2_pending.pop(state)
+    callback_url = request.host_url.rstrip("/") + "/api/oauth2/gmail/callback"
+
+    import requests as http_requests
+    token_resp = http_requests.post(GOOGLE_TOKEN_URL, data={
+        "code": code,
+        "client_id": pending["client_id"],
+        "client_secret": pending["client_secret"],
+        "redirect_uri": callback_url,
+        "grant_type": "authorization_code",
+    })
+
+    if token_resp.status_code != 200:
+        return f"<h2>Token exchange failed</h2><pre>{token_resp.text}</pre>", 400
+
+    tokens = token_resp.json()
+    credential_value = json.dumps({
+        "client_id": pending["client_id"],
+        "client_secret": pending["client_secret"],
+        "access_token": tokens.get("access_token"),
+        "refresh_token": tokens.get("refresh_token"),
+        "token_uri": GOOGLE_TOKEN_URL,
+    })
+
+    upsert_credential(pending["name"], "gmail", credential_value)
+
+    return """
+    <html><body style="background:#1a1a2e;color:#eee;font-family:sans-serif;display:flex;
+    align-items:center;justify-content:center;height:100vh;margin:0">
+    <div style="text-align:center">
+      <h2 style="color:#4ade80">Connected to Gmail</h2>
       <p>Credential saved. You can close this tab.</p>
       <script>if(window.opener){window.opener.postMessage('oauth2_done','*')}</script>
     </div></body></html>

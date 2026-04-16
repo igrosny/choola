@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-15
+
+### Added
+- Add evaluation storage system: every workflow run saves a JSON file to `workflows/<name>/evaluations/<run_id>.json` with per-node inputs, outputs, timing, and errors for debugging
+
+### Changed
+- Rename `tmp/` directory convention to `files/` for binary/generated files
+- Add `files/` directory to `choola create` scaffold
+- Add binary data rule to node contract: nodes must never put binary content in the payload
+
+### Fixed
+- Fix `payload_in` bug in execution engine where node input was incorrectly captured after execution instead of before
+
+### Infrastructure
+- Consolidate development guides into CLAUDE.md and create core node reference
+
 ## [0.2.1] - 2026-04-08
 
 ### Infrastructure

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "choola"
-version = "0.2.1"
+version = "0.3.0"
 description = "A workflow engine for VS Code developers — build, run, and automate workflows with Python nodes."
 readme = "README.md"
 license = "Apache-2.0"

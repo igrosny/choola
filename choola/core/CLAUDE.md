@@ -108,3 +108,23 @@ The abstract base class for ALL nodes. Provides:
 | `temperature` | number | no | 1.0 | Sampling temperature |
 
 **Output payload:** adds `llm_response`, `llm_model`, `llm_provider` to existing payload
+
+## Gmail (`choola.core.nodes.gmail.Gmail`)
+
+**Category:** output
+**Purpose:** Sends an email via the Gmail API using OAuth2 credentials.
+
+**Requires:** A stored credential (`await self.get_credential(name)`) with provider `gmail` — set up via the OAuth2 flow in Settings > Credentials.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `credential_name` | string | yes | — | Name of the stored Gmail OAuth2 credential |
+| `to_email` | string | yes | — | Recipient email address |
+| `subject` | string | yes | — | Subject template; `{key}` interpolates payload values |
+| `body` | textarea | yes | — | Body template; `{key}` interpolates payload values |
+| `body_type` | select | no | `plain` | `plain` or `html` |
+
+**Output payload:** adds `email_sent` (bool), `email_to` (str), `email_subject` (str) to existing payload
+
+**Setup:** In Settings > Credentials, select the "Gmail" provider, enter your Google Cloud OAuth2 Client ID and Client Secret (with Gmail API enabled and `gmail.send` scope), then click "Connect with Gmail" to authorize. The sender address is the authenticated Google account.
