@@ -164,7 +164,7 @@ def build_workflow(workflow_name: str) -> dict:
                 raise ValueError(
                     f"Node '{nid}' references next_node '{target}' which doesn't exist"
                 )
-            edges.append({"source": nid, "target": target})
+            edges.append({"id": f"{nid}-{target}", "source": nid, "target": target})
 
     return {"nodes": nodes, "edges": edges}
 
@@ -348,6 +348,35 @@ def api_topology(name: str):
         try:
             wf = build_workflow(name)
             positions = {n.get("id"): n.get("position", {}) for n in ui_data.get("nodes", [])}
+
+            # Auto-layout: walk DAG in topological order so unsaved nodes get spaced out
+            edges = wf["edges"]
+            children = {}
+            has_parent = set()
+            for e in edges:
+                children.setdefault(e["source"], []).append(e["target"])
+                has_parent.add(e["target"])
+            roots = [n["id"] for n in wf["nodes"] if n["id"] not in has_parent]
+            ordered = []
+            visited = set()
+            queue = list(roots)
+            while queue:
+                nid = queue.pop(0)
+                if nid in visited:
+                    continue
+                visited.add(nid)
+                ordered.append(nid)
+                for child in children.get(nid, []):
+                    queue.append(child)
+            # Assign default positions spaced vertically
+            auto_positions = {}
+            for i, nid in enumerate(ordered):
+                auto_positions[nid] = {"x": 250, "y": 80 + i * 150}
+            # Include any nodes not reached by the walk
+            for node in wf["nodes"]:
+                if node["id"] not in auto_positions:
+                    auto_positions[node["id"]] = {"x": 250, "y": 80 + len(auto_positions) * 150}
+
             nodes = []
             for node in wf["nodes"]:
                 nid = node["id"]
@@ -355,7 +384,7 @@ def api_topology(name: str):
                 nodes.append({
                     "id": nid,
                     "type": node["type"],
-                    "position": positions.get(nid, {"x": 250, "y": 250}),
+                    "position": positions.get(nid, auto_positions.get(nid, {"x": 250, "y": 250})),
                     "data": {"label": cls.name, "config": {}},
                 })
             return jsonify({"nodes": nodes, "edges": wf["edges"]})
@@ -379,7 +408,47 @@ def api_refresh_workflow(name: str):
 
     try:
         wf = build_workflow(name)
-        return jsonify({"nodes": [{"id": n["id"], "type": n["type"]} for n in wf["nodes"]], "edges": wf["edges"]})
+        # Preserve existing positions from topology.json
+        ui_data = load_topology(name)
+        positions = {n.get("id"): n.get("position", {}) for n in ui_data.get("nodes", [])}
+
+        # Auto-layout for nodes without saved positions
+        edges = wf["edges"]
+        children = {}
+        has_parent = set()
+        for e in edges:
+            children.setdefault(e["source"], []).append(e["target"])
+            has_parent.add(e["target"])
+        roots = [n["id"] for n in wf["nodes"] if n["id"] not in has_parent]
+        ordered = []
+        visited = set()
+        queue = list(roots)
+        while queue:
+            nid = queue.pop(0)
+            if nid in visited:
+                continue
+            visited.add(nid)
+            ordered.append(nid)
+            for child in children.get(nid, []):
+                queue.append(child)
+        auto_positions = {}
+        for i, nid in enumerate(ordered):
+            auto_positions[nid] = {"x": 250, "y": 80 + i * 150}
+        for node in wf["nodes"]:
+            if node["id"] not in auto_positions:
+                auto_positions[node["id"]] = {"x": 250, "y": 80 + len(auto_positions) * 150}
+
+        nodes = []
+        for n in wf["nodes"]:
+            nid = n["id"]
+            cls = n["cls"]
+            nodes.append({
+                "id": nid,
+                "type": n["type"],
+                "position": positions.get(nid, auto_positions.get(nid, {"x": 250, "y": 250})),
+                "data": {"label": cls.name, "config": {}},
+            })
+        return jsonify({"nodes": nodes, "edges": wf["edges"]})
     except ValueError as e:
         return jsonify({"nodes": [], "edges": [], "warning": str(e)})
 

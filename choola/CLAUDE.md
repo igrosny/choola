@@ -26,6 +26,7 @@ Every node file MUST:
 6. Store static assets in `workflows/<name>/static/` — never inside the .py file
 7. Use `workflows/<name>/files/` for binary/generated files — create with `Path(...).mkdir(parents=True, exist_ok=True)`
 8. **Never put binary content in the payload** — write binary files (images, PDFs, etc.) to `files/` and put the file path in the payload instead
+9. **Keep the `@choola-node` docstring in sync** — after ANY change to a node's fields, payload, next_nodes, side-effects, or error behavior, update the docstring block at the top of the file to match
 
 ### Required class attributes
 

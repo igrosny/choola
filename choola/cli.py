@@ -27,11 +27,14 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib
 import importlib.util
 import json
 import shutil
 import sys
+import threading
+import time
 import traceback
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -155,6 +158,16 @@ def topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
     return order
 
 
+def _elapsed_str(start_iso: str, end_iso: str) -> str:
+    """Return a human-readable elapsed time string like '1.2s' or '350ms'."""
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    ms = (end - start).total_seconds() * 1000
+    if ms < 1000:
+        return f"({int(ms)}ms)"
+    return f"({ms / 1000:.1f}s)"
+
+
 # ------------------------------------------------------------------
 # Headless execution engine
 # ------------------------------------------------------------------
@@ -189,21 +202,42 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
         instance._db_set_global = set_global_async
         instance._db_get_credential = get_credential_async
 
-        click.secho(f"  RUNNING  {cls.name} ({node_id})", fg="yellow")
         now = datetime.now(timezone.utc).isoformat()
         payload_before = capture_payload(payload)
+
+        # Spinner runs while the node executes
+        spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        stop_spinner = threading.Event()
+
+        def _spin(_label=f"{cls.name} ({node_id})"):
+            i = 0
+            while not stop_spinner.is_set():
+                char = spinner_chars[i % len(spinner_chars)]
+                click.echo(f"\r  {char} RUNNING  {_label}  ", nl=False)
+                i += 1
+                time.sleep(0.08)
+
+        spin_thread = threading.Thread(target=_spin, daemon=True)
+        spin_thread.start()
 
         try:
             payload = await instance.execute(payload, context)
             finished = datetime.now(timezone.utc).isoformat()
-            click.secho(f"  COMPLETED  {cls.name} -> {json.dumps(payload, default=str)}", fg="green")
+            stop_spinner.set()
+            spin_thread.join()
+            elapsed = _elapsed_str(now, finished)
+            click.echo(f"\r  COMPLETED  {cls.name} -> {json.dumps(payload, default=str)}  ", nl=False)
+            click.secho(elapsed, fg="green")
             insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
                            payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished)
             node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(payload)))
         except Exception as exc:
             finished = datetime.now(timezone.utc).isoformat()
+            stop_spinner.set()
+            spin_thread.join()
             tb = traceback.format_exc()
-            click.secho(f"  ERROR  {cls.name}: {exc}", fg="red")
+            click.echo(f"\r  ", nl=False)
+            click.secho(f"ERROR  {cls.name}: {exc}", fg="red")
             insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
                            payload_in=payload_before, error=tb,
                            started_at=now, finished_at=finished)
@@ -311,18 +345,65 @@ def list_workflows():
         click.echo("  No workflows found.")
 
 
-@main.command()
+@main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("workflow_name")
+@click.argument("field_values", nargs=-1, type=click.UNPROCESSED)
 @click.option("--payload", "-p", default="{}", help="JSON payload string")
-def run(workflow_name: str, payload: str):
-    """Execute a workflow headlessly (no server required)."""
+def run(workflow_name: str, field_values: tuple[str, ...], payload: str):
+    """Execute a workflow headlessly (no server required).
+
+    Positional values after the workflow name are mapped to the trigger
+    node's form_fields in order:
+
+        choola run bank-statement ../test.pdf 1BxiMVs...
+    """
     init_db()
     try:
         data = json.loads(payload)
     except json.JSONDecodeError as e:
         click.secho(f"Invalid JSON payload: {e}", fg="red")
         raise SystemExit(1)
-    asyncio.run(execute_workflow(workflow_name, data))
+
+    if field_values:
+        from choola.core.nodes.form_trigger import FormTrigger
+
+        registry = load_workflow_classes(workflow_name)
+        trigger_cls = None
+        for cls in registry.values():
+            if issubclass(cls, FormTrigger):
+                trigger_cls = cls
+                break
+        if trigger_cls is None:
+            click.secho("No FormTrigger found in this workflow — cannot map positional args", fg="red")
+            raise SystemExit(1)
+
+        # Extract form_fields from the trigger's fields definition
+        form_fields_def = []
+        for f in trigger_cls.fields:
+            if f.get("name") == "form_fields":
+                raw = f.get("default", [])
+                if isinstance(raw, str):
+                    form_fields_def = json.loads(raw)
+                else:
+                    form_fields_def = raw
+                break
+
+        field_names = [ff["field_name"] for ff in form_fields_def]
+        if len(field_values) > len(field_names):
+            click.secho(
+                f"Too many values: got {len(field_values)} but trigger only has "
+                f"{len(field_names)} field(s): {', '.join(field_names)}",
+                fg="red",
+            )
+            raise SystemExit(1)
+
+        form_data = dict(zip(field_names, field_values))
+        data.setdefault("form_data", {}).update(form_data)
+
+    try:
+        asyncio.run(execute_workflow(workflow_name, data))
+    except Exception:
+        raise SystemExit(1)
 
 
 @main.command()
