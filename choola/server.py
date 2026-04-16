@@ -71,7 +71,7 @@ CWD = Path(os.getcwd())
 WORKFLOWS_DIR = CWD / "workflows"
 
 # Static files are bundled inside the package at choola/static/
-_STATIC_DIR = ROOT / "static"
+_STATIC_DIR = ROOT / "static" / "dist"
 
 app = Flask(__name__, static_folder=str(_STATIC_DIR), static_url_path="/")
 
