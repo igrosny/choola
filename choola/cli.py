@@ -50,6 +50,7 @@ from choola.database import (
     insert_run_log,
     set_global_async,
     get_credential_async,
+    upsert_credential,
 )
 from choola.evaluations import (
     build_evaluation,
@@ -434,6 +435,87 @@ def nodes(workflow_name: str | None):
                 ):
                     seen.add(obj)
                     click.echo(f"  {obj.name:<25}  [{obj.category}]  (core)")
+
+
+CREDENTIAL_PROVIDERS = [
+    ("claude", "Claude"),
+    ("openai", "OpenAI"),
+    ("google", "Google"),
+    ("google_oauth2", "Google OAuth2"),
+    ("gmail", "Gmail"),
+]
+
+_OAUTH2_PROVIDERS = {"google_oauth2", "gmail"}
+
+
+@main.command()
+@click.argument("name")
+def credential(name: str):
+    """Store a credential interactively (provider and value are prompted)."""
+    init_db()
+
+    click.echo("Select a provider:")
+    for i, (_, label) in enumerate(CREDENTIAL_PROVIDERS, 1):
+        click.echo(f"  {i}. {label}")
+
+    choice = click.prompt("Enter number", type=click.IntRange(1, len(CREDENTIAL_PROVIDERS)))
+    provider = CREDENTIAL_PROVIDERS[choice - 1][0]
+
+    if provider in _OAUTH2_PROVIDERS:
+        client_id = click.prompt("Client ID (hidden)", hide_input=True)
+        client_secret = click.prompt("Client Secret (hidden)", hide_input=True)
+
+        from urllib.parse import urlencode
+
+        scopes = {
+            "google_oauth2": "https://www.googleapis.com/auth/drive.file",
+            "gmail": "https://www.googleapis.com/auth/gmail.send",
+        }
+        redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": scopes[provider],
+            "access_type": "offline",
+            "prompt": "consent",
+        })
+
+        click.echo()
+        click.echo("Open this URL in your browser to authorize:")
+        click.echo()
+        click.secho(f"  {auth_url}", fg="cyan")
+        click.echo()
+        code = click.prompt("Paste the authorization code here")
+
+        import requests as http_requests
+
+        token_url = "https://oauth2.googleapis.com/token"
+        token_resp = http_requests.post(token_url, data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
+
+        if token_resp.status_code != 200:
+            click.secho(f"Token exchange failed: {token_resp.text}", fg="red")
+            raise SystemExit(1)
+
+        tokens = token_resp.json()
+        value = json.dumps({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "access_token": tokens.get("access_token"),
+            "refresh_token": tokens.get("refresh_token"),
+            "token_uri": token_url,
+        })
+    else:
+        value = click.prompt("API key (hidden)", hide_input=True)
+
+    upsert_credential(name, provider, value)
+    click.secho(f"Credential '{name}' saved (provider: {provider}).", fg="green")
 
 
 if __name__ == "__main__":
