@@ -24,6 +24,7 @@ server.py — Flask application providing:
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import importlib.util
 import json
@@ -59,6 +60,8 @@ from choola.database import (
     list_credentials,
     set_global_async,
     upsert_credential,
+    workflow_db_execute_async,
+    workflow_db_query_async,
 )
 
 # ------------------------------------------------------------------
@@ -324,6 +327,8 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
         instance._db_get_global = get_global_async
         instance._db_set_global = set_global_async
         instance._db_get_credential = get_credential_async
+        instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
+        instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
 
         now = datetime.now(timezone.utc).isoformat()
         payload_before = capture_payload(node_input)

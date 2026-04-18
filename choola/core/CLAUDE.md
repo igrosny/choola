@@ -15,8 +15,9 @@ The abstract base class for ALL nodes. Provides:
 - `node_id` — auto-generated UUID hex
 - `config` — merged from field defaults + topology config
 - `async execute(payload, context)` — MUST be implemented by subclasses
-- `async get_global(key)` / `set_global(key, value)` — persistent SQLite globals
+- `async get_global(key)` / `set_global(key, value)` — persistent SQLite globals (shared across workflows)
 - `async get_credential(name)` — retrieve stored credentials
+- `async db_query(sql, params)` / `db_execute(sql, params)` — read/write the workflow's own SQLite DB at `files/db.sqlite` (provision the schema with the `DB` core node)
 - `ui_metadata()` — returns node metadata for the frontend
 
 **Required class attributes:**
@@ -132,6 +133,32 @@ The abstract base class for ALL nodes. Provides:
 - Response body is auto-parsed as JSON when possible, otherwise returned as a string
 - Body is only sent for POST, PUT, and PATCH methods
 - If no `Content-Type` header is set and a body is provided, defaults to `application/json`
+
+## DB (`choola.core.nodes.db.DB`)
+
+**Category:** processing
+**Purpose:** Provisions the workflow's own SQLite database at `workflows/<name>/files/db.sqlite` — tables, indexes, etc. Put this node early in the graph; downstream nodes read/write via `await self.db_query(...)` and `await self.db_execute(...)`.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `schema` | textarea | yes | — | Idempotent SQL DDL. Runs on every execution. |
+
+**Output payload:** adds `db_path` (str — absolute path to the SQLite file).
+
+**Notes:**
+- The DB file and `files/` directory are auto-created on first use.
+- Every workflow gets its own isolated DB — two workflows can have identically-named tables without conflict.
+- Schema must be idempotent: use `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, etc. Running the node twice is a no-op.
+- For non-trivial migrations, prefer adding new `CREATE TABLE`s / columns (via `ALTER TABLE`) in new schema statements rather than mutating existing ones destructively.
+
+**Using the data from other nodes:**
+```python
+# In any node extending BaseNode:
+await self.db_execute("INSERT INTO items (name) VALUES (?)", ("widget",))
+rows = await self.db_query("SELECT * FROM items WHERE name = ?", ("widget",))
+# rows is a list[dict], each keyed by column name
+```
 
 ## Gmail (`choola.core.nodes.gmail.Gmail`)
 

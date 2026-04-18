@@ -61,6 +61,8 @@ class BaseNode(abc.ABC):
         self._db_get_global = None
         self._db_set_global = None
         self._db_get_credential = None
+        self._db_query = None
+        self._db_execute = None
 
     # ------------------------------------------------------------------
     # Persistent global helpers (backed by SQLite via the engine)
@@ -86,6 +88,21 @@ class BaseNode(abc.ABC):
         if self._db_get_credential is None:
             raise RuntimeError("Database helpers not injected — run via the engine.")
         return await self._db_get_credential(name)
+
+    # ------------------------------------------------------------------
+    # Per-workflow SQLite helpers (files/db.sqlite)
+    # ------------------------------------------------------------------
+    async def db_query(self, sql: str, params: tuple | list = ()) -> list[dict]:
+        """Run a SELECT against the workflow's SQLite DB; return list of dicts."""
+        if self._db_query is None:
+            raise RuntimeError("Database helpers not injected — run via the engine.")
+        return await self._db_query(sql, params)
+
+    async def db_execute(self, sql: str, params: tuple | list = ()) -> int:
+        """Run an INSERT/UPDATE/DELETE against the workflow's SQLite DB; return rowcount."""
+        if self._db_execute is None:
+            raise RuntimeError("Database helpers not injected — run via the engine.")
+        return await self._db_execute(sql, params)
 
     # ------------------------------------------------------------------
     # Contract — subclasses MUST implement

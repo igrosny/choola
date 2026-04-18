@@ -154,7 +154,10 @@ Every node file must start with this grep-friendly block:
 @example-output: <JSON>
 @side-effects: <description or "none">
 @errors: <description or "none">
+@cost: <free | paid-one-shot | paid-per-item | paid-per-call> — <short description>   # optional, default: free
 ```
+
+The `@cost` line is optional. When absent, the node is treated as `free` — unless its `execute()` calls `await self.get_credential(...)`, in which case treat it as paid until an explicit `@cost: free` tag is added. See `## Cost Discipline` below for the values and the rules each one triggers.
 
 ## How the DAG Works
 
@@ -207,9 +210,35 @@ Nodes on inactive branches (and their descendants) receive `SKIPPED` status in e
 
 Any node can use these (inherited from BaseNode):
 
-- `await self.get_global(key)` — read a persistent global variable
+- `await self.get_global(key)` — read a persistent global variable (shared across all workflows on the host)
 - `await self.set_global(key, value)` — write a persistent global variable
 - `await self.get_credential(name)` — retrieve a stored credential (dict with `name`, `provider`, `value`). Returns `None` when the credential does not exist — nodes must raise a clear error in that case (see the core `LLM` and `Gmail` nodes for the pattern).
+- `await self.db_query(sql, params)` — run a SELECT against the workflow's own SQLite DB at `files/db.sqlite`; returns `list[dict]` keyed by column name.
+- `await self.db_execute(sql, params)` — run INSERT/UPDATE/DELETE against the workflow's DB; returns affected rowcount. Use `?` placeholders — never string-concatenate values into the SQL.
+- To use the DB, add the `DB` core node to the workflow and configure its `schema` field with `CREATE TABLE IF NOT EXISTS ...`. Every workflow gets its own isolated SQLite file, so tables can't collide with other workflows.
+
+
+## Cost Discipline
+
+Workflows regularly touch paid APIs (LLMs, third-party data providers). These rules keep an agent from burning money while creating, testing, or debugging.
+
+1. **Identifying paid nodes.** If a node declares `@cost:` in its docstring, trust it. If the tag is absent, the node is `free` by default — **unless** its `execute()` calls `await self.get_credential(...)`, in which case treat it as paid until the author adds an explicit `@cost: free` tag. Allowed tag values:
+   - `free` — no paid external dependency.
+   - `paid-one-shot` — one paid call per run regardless of payload size.
+   - `paid-per-item` — paid call inside a loop over a payload list.
+   - `paid-per-call` — paid with variable call count (retries, streaming, fan-out).
+
+2. **Cap fan-out loops.** Any node tagged `paid-per-item` or `paid-per-call` MUST expose a `max_items` field (small default, e.g. 20) and stop once the cap is reached. Report `processed_count` and `skipped_due_to_cap` in the output so the operator can decide whether to bump the cap.
+
+3. **Circuit-break consecutive failures.** Paid loop nodes MUST expose `max_consecutive_errors` (default 3). On exceed, abort the loop, return partial results, and include `abort_reason` in the output. One bad API key shouldn't burn through 100 calls.
+
+4. **Replay, don't re-run.** When iterating on a downstream node, default to `choola replay <workflow> <run_id> <node_id>` against an existing evaluation. Use `choola run` only for the first happy-path test or when upstream data has genuinely changed.
+
+5. **No live calls during scaffolding.** While creating or editing a workflow, stop at writing nodes and import-checking them (`python -c "import ..."` or `choola list`). Do not invoke `choola run` until the user confirms the required credentials exist and approves the spend.
+
+6. **Cheapest model by default.** Classification and filter loops default to Haiku or Gemini Flash. Escalate to Sonnet/Opus only when the user asks.
+
+7. **Pre-filter before paying.** Inside a paid loop, skip items with empty/missing inputs before the API call. Empty inputs go to `skipped`, not `errored` — errored slots count against the circuit breaker.
 
 ## Evaluations — Debugging Workflow Runs
 

@@ -195,6 +195,59 @@ async def get_credential_async(name: str, db_path: Path = DB_PATH) -> dict | Non
     return get_credential(name, db_path)
 
 
+# ------------------------------------------------------------------
+# Per-workflow SQLite (one DB per workflow, at files/db.sqlite)
+# ------------------------------------------------------------------
+def workflow_db_path(workflow_name: str) -> Path:
+    """Return the path to the workflow's SQLite file, creating files/ if missing."""
+    files_dir = Path.cwd() / "workflows" / workflow_name / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    return files_dir / "db.sqlite"
+
+
+def _workflow_db_query_sync(workflow_name: str, sql: str, params: tuple | list) -> list[dict]:
+    conn = get_connection(workflow_db_path(workflow_name))
+    try:
+        return [dict(r) for r in conn.execute(sql, params or ()).fetchall()]
+    finally:
+        conn.close()
+
+
+def _workflow_db_execute_sync(workflow_name: str, sql: str, params: tuple | list) -> int:
+    conn = get_connection(workflow_db_path(workflow_name))
+    try:
+        cur = conn.execute(sql, params or ())
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def _workflow_db_executescript_sync(workflow_name: str, sql: str) -> None:
+    conn = get_connection(workflow_db_path(workflow_name))
+    try:
+        conn.executescript(sql)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def workflow_db_query_async(
+    workflow_name: str, sql: str, params: tuple | list = ()
+) -> list[dict]:
+    return _workflow_db_query_sync(workflow_name, sql, params)
+
+
+async def workflow_db_execute_async(
+    workflow_name: str, sql: str, params: tuple | list = ()
+) -> int:
+    return _workflow_db_execute_sync(workflow_name, sql, params)
+
+
+async def workflow_db_executescript_async(workflow_name: str, sql: str) -> None:
+    _workflow_db_executescript_sync(workflow_name, sql)
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at {DB_PATH}")
