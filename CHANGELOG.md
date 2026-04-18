@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-17
+
+### Added
+- Add HTTP node for making external requests with customizable parameters
+- Add `replay` CLI command to execute a single node with saved input from evaluations
+- Add interactive `credentials` CLI command with OAuth2 support for multiple providers
+
+### Changed
+- Enhance OAuth2 integration to support multiple providers and update frontend for provider selection
+- Improve auto-layout for nodes in API responses
+
+### Fixed
+- Fix static file directory path to include `dist` subdirectory
+
+### Infrastructure
+- Update README getting started section and workflow execution details
+- Update workflow documentation
+
 ## [0.3.0] - 2026-04-15
 
 ### Added
