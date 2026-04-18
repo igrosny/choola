@@ -216,6 +216,47 @@ Each evaluation JSON contains the full execution trace:
 - **Node crashed**: read the `error` field for the full traceback — fix the node's `execute()` method
 - **Workflow succeeded but wrong result**: check `final_payload` and trace backward through nodes to find where the data diverged
 
+### Replaying a single node
+
+Instead of re-running the entire workflow to test a fix, use `choola replay` to execute one node in isolation using the exact input it received in a previous run.
+
+**Basic usage — replay a node with its saved input:**
+
+```bash
+# 1. Find the run_id and node_id from a previous evaluation
+cat workflows/my-workflow/evaluations/a1b2c3d4e5f6.json | jq '.nodes[] | {node_id, status}'
+
+# 2. Replay that node
+choola replay my-workflow a1b2c3d4e5f6 process
+```
+
+This loads the evaluation, extracts the `input` that `process` received during run `a1b2c3d4e5f6`, and re-executes the node's current code against that input. The output is printed to stdout.
+
+**Override the input payload:**
+
+```bash
+choola replay my-workflow a1b2c3d4e5f6 process --payload '{"key": "new_value"}'
+```
+
+Use `--payload` to test the node with modified input without editing the evaluation file.
+
+**Suppress the diff:**
+
+```bash
+choola replay my-workflow a1b2c3d4e5f6 process --no-diff
+```
+
+By default, if the original run produced output for this node, `replay` shows what changed between the saved output and the new output. Use `--no-diff` to suppress this.
+
+**When to use replay:**
+
+- **Node crashed** — fix the `execute()` method, then replay to verify the fix without re-running upstream nodes
+- **Node produced wrong data** — edit the node logic, replay with the same input, check the new output
+- **Test edge cases** — use `--payload` to feed the node unusual input and verify it handles it correctly
+- **Expensive upstream nodes** — avoid re-running LLM calls, API requests, or form submissions just to test a downstream node
+
+**Important:** Replay re-executes the node's code live. Side effects (file writes, API calls, database changes) will happen again. Credentials are fetched from the current database, not from the evaluation.
+
 ## CLI
 
 ```bash
@@ -224,5 +265,6 @@ choola start                             # Start server at http://localhost:5000
 choola create <workflow_name>            # Scaffold a new workflow
 choola list                              # List all workflows
 choola run <workflow_name> --payload '{}' # Run headlessly
+choola replay <workflow> <run_id> <node_id>  # Re-run one node with saved input
 choola nodes                             # List core node types
 ```

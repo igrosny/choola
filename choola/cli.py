@@ -21,6 +21,7 @@ Commands:
     choola create <name>     Scaffold a new workflow
     choola list              List all workflows in the current project
     choola run <name>        Execute a workflow headlessly
+    choola replay <wf> <run> <node>  Re-run one node with saved evaluation input
     choola nodes [name]      List available node types
 """
 
@@ -516,6 +517,114 @@ def credential(name: str):
 
     upsert_credential(name, provider, value)
     click.secho(f"Credential '{name}' saved (provider: {provider}).", fg="green")
+
+
+@main.command()
+@click.argument("workflow_name")
+@click.argument("run_id")
+@click.argument("node_id")
+@click.option("--payload", "-p", default=None, help="Override input payload (JSON string)")
+@click.option("--no-diff", is_flag=True, help="Suppress output diff")
+def replay(workflow_name: str, run_id: str, node_id: str, payload: str | None, no_diff: bool):
+    """Re-run a single node using saved input from a previous evaluation.
+
+    Loads the evaluation file for RUN_ID, extracts the input that NODE_ID
+    received, and re-executes the node with its current code. Useful for
+    iterating on a fix without re-running the entire workflow.
+    """
+    init_db()
+
+    # 1. Load evaluation
+    eval_path = _cwd_workflows() / workflow_name / "evaluations" / f"{run_id}.json"
+    if not eval_path.exists():
+        click.secho(f"Evaluation not found: {eval_path}", fg="red")
+        raise SystemExit(1)
+
+    evaluation = json.loads(eval_path.read_text())
+
+    # 2. Find the target node in the evaluation
+    node_eval = None
+    for entry in evaluation["nodes"]:
+        if entry["node_id"] == node_id:
+            node_eval = entry
+            break
+
+    if node_eval is None:
+        available = [e["node_id"] for e in evaluation["nodes"]]
+        click.secho(f"Node '{node_id}' not found in evaluation. Available: {', '.join(available)}", fg="red")
+        raise SystemExit(1)
+
+    # 3. Load workflow classes and find the matching node
+    registry = load_workflow_classes(workflow_name)
+    target_cls = None
+    for cls in registry.values():
+        if cls.node_id == node_id:
+            target_cls = cls
+            break
+
+    if target_cls is None:
+        click.secho(f"Node '{node_id}' no longer exists in workflow code.", fg="red")
+        raise SystemExit(1)
+
+    # 4. Determine input payload
+    if payload is not None:
+        try:
+            input_payload = json.loads(payload)
+        except json.JSONDecodeError as e:
+            click.secho(f"Invalid JSON payload: {e}", fg="red")
+            raise SystemExit(1)
+        click.echo(f"[choola] Using custom payload override")
+    else:
+        input_payload = node_eval["input"] or {}
+        click.echo(f"[choola] Using saved input from evaluation {run_id}")
+
+    # 5. Execute
+    context = {
+        "workflow": workflow_name,
+        "run_id": run_id,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    click.echo(f"[choola] Replaying node: {target_cls.name} ({node_id})")
+    click.echo(f"[choola] Input: {json.dumps(input_payload, default=str)}\n")
+
+    async def _replay():
+        instance = target_cls()
+        instance._db_get_global = get_global_async
+        instance._db_set_global = set_global_async
+        instance._db_get_credential = get_credential_async
+        return await instance.execute(input_payload, context)
+
+    try:
+        result = asyncio.run(_replay())
+        click.secho(f"  COMPLETED  {target_cls.name}", fg="green")
+        click.echo(f"\n[choola] Output:")
+        click.echo(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        tb = traceback.format_exc()
+        click.secho(f"  ERROR  {target_cls.name}: {exc}", fg="red")
+        click.echo(f"\n{tb}")
+        raise SystemExit(1)
+
+    # 6. Diff against saved output
+    saved_output = node_eval.get("output")
+    if saved_output is not None and not no_diff:
+        click.echo(f"\n[choola] Diff (saved vs new):")
+        added = set(result.keys()) - set(saved_output.keys())
+        removed = set(saved_output.keys()) - set(result.keys())
+        changed = {
+            k for k in set(result.keys()) & set(saved_output.keys())
+            if result[k] != saved_output[k]
+        }
+        if not added and not removed and not changed:
+            click.secho("  No changes — output matches saved evaluation.", fg="green")
+        else:
+            for k in sorted(changed):
+                click.echo(f"  ~ {k}: {json.dumps(saved_output[k], default=str)} -> {json.dumps(result[k], default=str)}")
+            for k in sorted(added):
+                click.secho(f"  + {k}: {json.dumps(result[k], default=str)}", fg="green")
+            for k in sorted(removed):
+                click.secho(f"  - {k}: {json.dumps(saved_output[k], default=str)}", fg="red")
 
 
 if __name__ == "__main__":
