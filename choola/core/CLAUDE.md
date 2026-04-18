@@ -109,6 +109,30 @@ The abstract base class for ALL nodes. Provides:
 
 **Output payload:** adds `llm_response`, `llm_model`, `llm_provider` to existing payload
 
+## HTTP (`choola.core.nodes.http.HTTP`)
+
+**Category:** processing
+**Purpose:** Makes an HTTP request to an external URL and returns the response. Supports all common HTTP methods, header/query customization, body interpolation, and optional Bearer token auth via stored credentials.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `method` | select | no | `GET` | GET, POST, PUT, PATCH, DELETE |
+| `url` | string | yes | — | Request URL; `{key}` interpolates payload values |
+| `headers` | json | no | `{}` | Request headers as a JSON object |
+| `query_params` | json | no | `{}` | Query parameters as a JSON object |
+| `body` | textarea | no | — | Request body; `{key}` interpolates payload values |
+| `credential_name` | string | no | — | Stored credential name — adds `Authorization: Bearer <value>` |
+| `timeout` | number | no | `30` | Request timeout in seconds |
+
+**Output payload:** adds `http_status` (int), `http_body` (dict or str), `http_headers` (dict) to existing payload
+
+**Notes:**
+- URL and body support `{key}` interpolation from the incoming payload
+- Response body is auto-parsed as JSON when possible, otherwise returned as a string
+- Body is only sent for POST, PUT, and PATCH methods
+- If no `Content-Type` header is set and a body is provided, defaults to `application/json`
+
 ## Gmail (`choola.core.nodes.gmail.Gmail`)
 
 **Category:** output

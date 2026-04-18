@@ -423,9 +423,10 @@ def nodes(workflow_name: str | None):
         import choola.core.nodes.webhook_trigger as _wt
         import choola.core.nodes.llm as _llm
         import choola.core.nodes.manual_trigger as _mt
+        import choola.core.nodes.http as _http
         seen = set()
         skip = {BaseNode, Trigger}
-        for mod in (_ft, _wt, _llm, _mt):
+        for mod in (_ft, _wt, _llm, _mt, _http):
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 if (

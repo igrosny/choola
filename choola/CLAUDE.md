@@ -39,11 +39,44 @@ Every node file MUST:
 | `fields` | `list[dict]` | Input field definitions for the UI |
 | `next_nodes` | `list[str]` | List of `node_id` values this node passes output to. Empty list `[]` for terminal nodes. |
 
+
+## Node config at runtime — what actually reaches `self.config`
+
+`self.config` inside `execute()` is populated **only** from the node's `fields`
+`default` values. The UI's Configuration tab is currently not a runtime source
+— every execution path (`choola run` and the server run endpoints)
+instantiates nodes with `cls()` and no config argument.
+
+**Rules this implies for every node:**
+
+1. If a value is required to run, give the field a `default` — not just
+   `required: True`. A required field with no default will always crash on
+   `choola run`.
+2. Never rely on the UI to "fill in" a config value later. If the user must
+   supply it per run, take it through the form (`form_data`) or the payload,
+   not via a `fields` entry.
+3. Use `fields` defaults for fixed settings (model names, timeouts, credential
+   *names*, column limits). Use the payload for per-run inputs (file paths,
+   sheet IDs, prompts).
+4. Stored credentials are looked up at runtime via
+   `await self.get_credential(name)` — the *name* should have a `default` so
+   the node can resolve the credential with no additional setup.
+
+**Checklist before declaring a node done:** re-read every `fields` entry and
+confirm that `choola run <workflow> --payload '{}'` would not trip on a
+missing value. The canonical example of this pattern is
+`resize-images/nodes/start.py`, which provides `default` values for `path`,
+`form_title`, `form_fields`, `submit_label`, and `response_mode` so the
+workflow is runnable without any UI-side configuration.
+
+
 ## Core Nodes — Always Extend, Never Instantiate Directly
 
 Core nodes live in the `choola` package and provide reusable base behavior. **You must never reference a core node directly in `topology.json`.** Instead, create a wrapper class in your workflow's `nodes/` directory that extends the core node.
 
 See `choola/core/CLAUDE.md` for the full reference of available core nodes and their fields.
+
+**Picking a trigger.** Default to FormTrigger for any workflow that takes runtime input. FormTrigger fields double as positional CLI arguments (choola run <workflow> <value1> <value2>) and render a browser form at the configured path. ManualTrigger accepts neither — it only works via the UI "Run" button or an explicit --payload '{...}' — so reserve it for workflows that genuinely take zero input. Use WebhookTrigger when an external system calls in.
 
 ### Example: Extending a Core Node
 
@@ -142,7 +175,7 @@ Any node can use these (inherited from BaseNode):
 
 - `await self.get_global(key)` — read a persistent global variable
 - `await self.set_global(key, value)` — write a persistent global variable
-- `await self.get_credential(name)` — retrieve a stored credential (dict with `name`, `provider`, `value`)
+- `await self.get_credential(name)` — retrieve a stored credential (dict with `name`, `provider`, `value`). Returns `None` when the credential does not exist — nodes must raise a clear error in that case (see the core `LLM` and `Gmail` nodes for the pattern).
 
 ## Evaluations — Debugging Workflow Runs
 
