@@ -169,6 +169,40 @@ ContactForm (node_id="contact_form", next_nodes=["csv_append"])
     └──> CsvAppend (node_id="csv_append", next_nodes=[])
 ```
 
+### Branching (Split & Merge)
+
+A node can fan out to multiple downstream nodes by listing them in `next_nodes`. Each branch receives an isolated copy of the parent's output.
+
+```
+Trigger (next_nodes=["branch_a", "branch_b"])
+    ├──> BranchA (next_nodes=["merge_point"])
+    └──> BranchB (next_nodes=["merge_point"])
+              └──> MergePoint (next_nodes=[])
+```
+
+**Split**: When a node has multiple `next_nodes`, each downstream node gets its own deep copy of the parent's output. Branches are isolated — mutations in one branch don't affect the other.
+
+**Merge**: When multiple branches feed into the same node, their outputs are shallow-merged in topological order (last-writer-wins for duplicate keys). The merge node can also access individual parent outputs via `context["parent_outputs"]` — a dict keyed by parent `node_id`.
+
+### Conditional Routing
+
+Any node can selectively activate only some of its `next_nodes` by returning a special `__active_branches__` key in its output payload. The engine pops this key (downstream nodes never see it) and marks unreachable nodes as `SKIPPED`.
+
+```python
+class MyRouter(BaseNode):
+    node_id = "router"
+    next_nodes = ["high_handler", "low_handler"]
+
+    async def execute(self, payload, context):
+        if payload.get("score", 0) >= 80:
+            payload["__active_branches__"] = ["high_handler"]
+        else:
+            payload["__active_branches__"] = ["low_handler"]
+        return payload
+```
+
+Nodes on inactive branches (and their descendants) receive `SKIPPED` status in evaluations and the UI. A merge-point node is only skipped if ALL of its parents are skipped — so diamond patterns work correctly.
+
 ## Available Helpers
 
 Any node can use these (inherited from BaseNode):

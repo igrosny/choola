@@ -39,6 +39,7 @@ const STATUS_COLORS = {
   RUNNING: '#875a08',
   COMPLETED: '#2f7613',
   ERROR: '#b33232',
+  SKIPPED: '#9ca3af',
 };
 
 // ── Shared styles ─────────────────────────────────────────

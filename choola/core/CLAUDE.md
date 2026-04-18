@@ -152,3 +152,35 @@ The abstract base class for ALL nodes. Provides:
 **Output payload:** adds `email_sent` (bool), `email_to` (str), `email_subject` (str) to existing payload
 
 **Setup:** In Settings > Credentials, select the "Gmail" provider, enter your Google Cloud OAuth2 Client ID and Client Secret (with Gmail API enabled and `gmail.send` scope), then click "Connect with Gmail" to authorize. The sender address is the authenticated Google account.
+
+## Branching & Merging (Engine Features)
+
+These are engine-level capabilities available to any node, not a separate core node class.
+
+### Conditional Routing (`__active_branches__`)
+
+Any node can return `__active_branches__` in its payload to choose which `next_nodes` to activate. The engine pops this key before passing the payload downstream.
+
+```python
+async def execute(self, payload, context):
+    if payload.get("priority") == "high":
+        payload["__active_branches__"] = ["urgent_handler"]
+    else:
+        payload["__active_branches__"] = ["normal_handler"]
+    return payload
+```
+
+Nodes on inactive branches (and their descendants) get `SKIPPED` status. A merge-point node is only skipped if ALL of its parents are skipped.
+
+### Merge-Point Input (`context["parent_outputs"]`)
+
+When a node has multiple parents (merge point), the engine shallow-merges all active parents' outputs in topological order as the node's input payload. For nodes that need to distinguish which parent produced which data, the individual parent outputs are available in `context["parent_outputs"]` — a dict keyed by parent `node_id`.
+
+```python
+async def execute(self, payload, context):
+    # payload has the shallow-merged result from all parents
+    # context["parent_outputs"] has per-parent dicts if you need them
+    branch_a_data = context["parent_outputs"].get("branch_a", {})
+    branch_b_data = context["parent_outputs"].get("branch_b", {})
+    return payload
+```

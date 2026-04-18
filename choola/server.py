@@ -233,10 +233,45 @@ def run_workflow(workflow_name: str, payload: dict[str, Any], run_id: str | None
     return asyncio.run(_run_workflow_async(workflow_name, payload, run_id))
 
 
+def _mark_skipped(
+    inactive_starts: set[str],
+    adjacency: dict[str, list[str]],
+    parents: dict[str, list[str]],
+    skipped: set[str],
+    router_id: str,
+) -> None:
+    """BFS from *inactive_starts*, skipping nodes reachable only via dead paths.
+
+    A merge-point node is skipped only when ALL of its parents are either
+    already skipped or are inactive outputs of this router.
+    """
+    candidates: deque[str] = deque(inactive_starts)
+    while candidates:
+        nid = candidates.popleft()
+        if nid in skipped:
+            continue
+        all_parents_dead = all(
+            p in skipped or (p == router_id and nid in inactive_starts)
+            for p in parents.get(nid, [])
+        )
+        if all_parents_dead:
+            skipped.add(nid)
+            for child in adjacency.get(nid, []):
+                if child not in skipped:
+                    candidates.append(child)
+
+
 async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_id: str) -> dict:
     wf = build_workflow(workflow_name)
     sorted_ids = topological_sort(wf["nodes"], wf["edges"])
     node_lookup = {n["id"]: n for n in wf["nodes"]}
+
+    # Reverse-edge map: for each node, which nodes feed into it
+    parents: dict[str, list[str]] = defaultdict(list)
+    adjacency: dict[str, list[str]] = defaultdict(list)
+    for edge in wf["edges"]:
+        parents[edge["target"]].append(edge["source"])
+        adjacency[edge["source"]].append(edge["target"])
 
     context: dict[str, Any] = {
         "workflow": workflow_name,
@@ -244,7 +279,8 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    results: dict[str, Any] = {}
+    outputs: dict[str, dict[str, Any]] = {}
+    skipped: set[str] = set()
     initial_payload = capture_payload(payload)
     node_evals: list[dict] = []
 
@@ -253,24 +289,64 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
         node_type = node_entry["type"]
         cls = node_entry["cls"]
 
+        # Skip nodes on inactive branches
+        if node_id in skipped:
+            now = datetime.now(timezone.utc).isoformat()
+            _emit(run_id, "node_status", {"node_id": node_id, "status": "SKIPPED"})
+            insert_run_log(run_id, workflow_name, node_id, node_type, "SKIPPED",
+                           started_at=now, finished_at=now)
+            node_evals.append(make_node_eval(node_id, node_type, "SKIPPED", now, now, {}))
+            continue
+
+        # Assemble input from parent outputs
+        node_parents = parents.get(node_id, [])
+        active_parents = [p for p in node_parents if p not in skipped]
+
+        if not node_parents:
+            # Root / trigger node — gets the original workflow payload
+            node_input = capture_payload(payload)
+        elif len(active_parents) == 1:
+            # Single parent — pass its output directly (backward compatible)
+            node_input = capture_payload(outputs[active_parents[0]])
+        else:
+            # Merge point — shallow-merge active parents in topo order
+            node_input = {}
+            for pid in sorted_ids:
+                if pid in active_parents:
+                    node_input.update(capture_payload(outputs[pid]))
+
+        # Expose per-parent outputs for merge-aware nodes
+        context["parent_outputs"] = {
+            pid: capture_payload(outputs[pid]) for pid in active_parents
+        }
+
         instance = cls()
         instance._db_get_global = get_global_async
         instance._db_set_global = set_global_async
         instance._db_get_credential = get_credential_async
 
         now = datetime.now(timezone.utc).isoformat()
-        payload_before = capture_payload(payload)
-        _emit(run_id, "node_status", {"node_id": node_id, "status": "RUNNING", "payload": payload})
+        payload_before = capture_payload(node_input)
+        _emit(run_id, "node_status", {"node_id": node_id, "status": "RUNNING", "payload": node_input})
         insert_run_log(run_id, workflow_name, node_id, node_type, "RUNNING", payload_in=payload_before, started_at=now)
 
         try:
-            payload = await instance.execute(payload, context)
+            result = await instance.execute(node_input, context)
+
+            # Conditional routing: pop __active_branches__ before storing
+            active_branches = result.pop("__active_branches__", None)
+            outputs[node_id] = result
+
+            if active_branches is not None:
+                inactive = set(cls.next_nodes) - set(active_branches)
+                if inactive:
+                    _mark_skipped(inactive, adjacency, parents, skipped, node_id)
+
             finished = datetime.now(timezone.utc).isoformat()
-            _emit(run_id, "node_status", {"node_id": node_id, "status": "COMPLETED", "payload": payload})
+            _emit(run_id, "node_status", {"node_id": node_id, "status": "COMPLETED", "payload": result})
             insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished)
-            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(payload)))
-            results[node_id] = payload
+                           payload_in=payload_before, payload_out=result, started_at=now, finished_at=finished)
+            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(result)))
         except Exception as exc:
             finished = datetime.now(timezone.utc).isoformat()
             tb = traceback.format_exc()
@@ -283,10 +359,17 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
             _emit(run_id, "run_complete", {"status": "ERROR", "error": str(exc)})
             raise
 
-    evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "COMPLETED", payload)
+    # Final payload: last executed node's output in topo order
+    final_payload = None
+    for nid in reversed(sorted_ids):
+        if nid not in skipped and nid in outputs:
+            final_payload = outputs[nid]
+            break
+
+    evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "COMPLETED", final_payload)
     save_evaluation(workflow_name, evaluation)
-    _emit(run_id, "run_complete", {"status": "COMPLETED", "payload": payload})
-    return {"status": "COMPLETED", "payload": payload, "run_id": run_id}
+    _emit(run_id, "run_complete", {"status": "COMPLETED", "payload": final_payload})
+    return {"status": "COMPLETED", "payload": final_payload, "run_id": run_id}
 
 
 # ------------------------------------------------------------------
