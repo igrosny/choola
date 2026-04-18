@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-18
+
+### Added
+- Add SQLite database support for workflows with introspection and query capabilities
+- Add branching, merging, and conditional routing to the workflow engine
+
 ## [0.4.0] - 2026-04-17
 
 ### Added
