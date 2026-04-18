@@ -574,6 +574,87 @@ def api_node_source(node_type: str):
     return jsonify({"ok": True, "path": str(file_path.relative_to(display_root))})
 
 
+@app.route("/api/workflows/<name>/db/schema", methods=["GET"])
+def api_workflow_db_schema(name: str):
+    """Introspect the workflow's SQLite DB — tables and their columns."""
+    import sqlite3
+
+    db_file = WORKFLOWS_DIR / name / "files" / "db.sqlite"
+    if not db_file.exists():
+        return jsonify({"exists": False, "tables": []})
+
+    conn = sqlite3.connect(str(db_file))
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = [
+            dict(r) for r in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name"
+            ).fetchall()
+        ]
+        for t in tables:
+            cols = conn.execute(f"PRAGMA table_info(\"{t['name']}\")").fetchall()
+            t["columns"] = [
+                {
+                    "name": c["name"],
+                    "type": c["type"] or "",
+                    "notnull": bool(c["notnull"]),
+                    "pk": bool(c["pk"]),
+                    "default": c["dflt_value"],
+                }
+                for c in cols
+            ]
+            row_count = conn.execute(f"SELECT COUNT(*) AS n FROM \"{t['name']}\"").fetchone()
+            t["row_count"] = row_count["n"] if row_count else 0
+        return jsonify({"exists": True, "tables": tables, "path": str(db_file)})
+    finally:
+        conn.close()
+
+
+@app.route("/api/workflows/<name>/db/query", methods=["POST"])
+def api_workflow_db_query(name: str):
+    """Run a SQL statement against the workflow's SQLite DB and return rows."""
+    import sqlite3
+    import time
+
+    db_file = WORKFLOWS_DIR / name / "files" / "db.sqlite"
+    if not db_file.exists():
+        return jsonify({"error": "Database does not exist for this workflow."}), 404
+
+    data = request.get_json(silent=True) or {}
+    sql = (data.get("sql") or "").strip()
+    if not sql:
+        return jsonify({"error": "sql is required"}), 400
+
+    conn = sqlite3.connect(str(db_file))
+    conn.row_factory = sqlite3.Row
+    try:
+        start = time.time()
+        cursor = conn.execute(sql)
+        duration_ms = int((time.time() - start) * 1000)
+        if cursor.description is not None:
+            columns = [c[0] for c in cursor.description]
+            rows = [[r[c] for c in columns] for r in cursor.fetchall()]
+            return jsonify({
+                "columns": columns,
+                "rows": rows,
+                "rowcount": len(rows),
+                "duration_ms": duration_ms,
+            })
+        conn.commit()
+        return jsonify({
+            "columns": [],
+            "rows": [],
+            "rowcount": cursor.rowcount,
+            "duration_ms": duration_ms,
+        })
+    except sqlite3.Error as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
 @app.route("/api/nodes/<path:node_type>/fields")
 def api_node_fields(node_type: str):
     """Return the fields metadata for a node type."""

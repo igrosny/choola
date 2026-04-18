@@ -31,6 +31,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
 import ChatPanel from './ChatPanel';
+import WorkflowDbView from './WorkflowDbView';
 import '../App.css';
 
 // ── Status colors (light theme) ───────────────────────────
@@ -286,6 +287,38 @@ function SidebarSection({ label, children }) {
   );
 }
 
+// ── Tab button for the canvas-area tab bar ──────────────────
+function CanvasTab({ label, active, onClick, badge }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        height: 36, padding: '0 14px',
+        border: 'none', background: 'transparent',
+        borderBottom: `2px solid ${active ? '#141413' : 'transparent'}`,
+        color: active ? '#141413' : '#73726c',
+        fontFamily: 'var(--font-ui)', fontSize: 13,
+        fontWeight: active ? 600 : 500,
+        cursor: 'pointer',
+        transition: 'color 0.12s ease, border-color 0.12s ease',
+      }}
+    >
+      {label}
+      {badge != null && (
+        <span style={{
+          fontSize: 10, padding: '1px 6px', borderRadius: 8,
+          background: active ? '#141413' : '#e8e6dc',
+          color: active ? '#ffffff' : '#3d3d3a',
+          fontWeight: 500,
+        }}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── WorkflowEditor ────────────────────────────────────────
 export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -303,6 +336,8 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [credentials, setCredentials] = useState([]);
   const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
+  const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db'
+  const [dbSchema, setDbSchema] = useState(null); // { exists, tables, path }
   const logsEndRef = useRef(null);
 
   const isPublished = workflowStatus === 'published';
@@ -403,6 +438,20 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   }, [workflowName]);
 
   const onNodeDragStop = useCallback(() => { saveTopology(); }, [saveTopology]);
+
+  // Fetch the workflow's SQLite schema (tables + columns). Called on mount and after runs.
+  const fetchDbSchema = useCallback(() => {
+    fetch(`/api/workflows/${workflowName}/db/schema`)
+      .then(r => r.json())
+      .then(setDbSchema)
+      .catch(() => setDbSchema({ exists: false, tables: [] }));
+  }, [workflowName]);
+
+  useEffect(() => {
+    setActiveCanvasTab('canvas');
+    setDbSchema(null);
+    fetchDbSchema();
+  }, [workflowName, fetchDbSchema]);
 
   const onConnect = useCallback(
     (params) => setEdges((eds) => addEdge({ ...params, type: 'deletable' }, eds)),
@@ -520,6 +569,8 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       } else {
         setLogs(prev => [...prev, `[ERROR] ${data.error}`]);
       }
+      // A run may have provisioned or modified the workflow's SQLite DB
+      fetchDbSchema();
     });
     return bus;
   };
@@ -905,39 +956,73 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
           </div>
         </aside>
 
-        {/* ── Canvas ── */}
-        <div style={{ flex: 1, position: 'relative' }}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            edgeTypes={EDGE_TYPES}
-            onNodesChange={isPublished ? undefined : onNodesChange}
-            onEdgesChange={isPublished ? undefined : onEdgesChange}
-            onConnect={isPublished ? undefined : onConnect}
-            onEdgesDelete={isPublished ? undefined : saveTopology}
-            onNodeDoubleClick={onNodeDoubleClick}
-            onNodeDragStop={isPublished ? undefined : onNodeDragStop}
-            nodesDraggable={!isPublished}
-            nodesConnectable={!isPublished}
-            elementsSelectable={!isPublished}
-            fitView
-          >
-            <Controls />
-            <Background color="#e8e6dc" gap={28} size={1} />
-            {nodes.length === 0 && (
-              <Panel position="top-center" style={{ marginTop: 40 }}>
-                <div style={{
-                  background: 'rgba(255,255,255,0.9)',
-                  border: '0.8px solid rgba(31,30,29,0.12)',
-                  borderRadius: 10, padding: '14px 20px',
-                  fontSize: 13, color: '#73726c', textAlign: 'center',
-                  boxShadow: 'rgba(0,0,0,0.05) 0px 2px 8px',
-                }}>
-                  No nodes yet — use AI chat or add nodes to <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>workflows/{workflowName}/nodes/</code>
-                </div>
-              </Panel>
-            )}
-          </ReactFlow>
+        {/* ── Canvas area (tabs + canvas OR db view) ── */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          {dbSchema?.exists && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 2,
+              background: '#ffffff',
+              borderBottom: '0.8px solid rgba(31,30,29,0.1)',
+              padding: '0 14px',
+              flexShrink: 0,
+            }}>
+              <CanvasTab
+                label="Canvas"
+                active={activeCanvasTab === 'canvas'}
+                onClick={() => setActiveCanvasTab('canvas')}
+              />
+              <CanvasTab
+                label="Database"
+                active={activeCanvasTab === 'db'}
+                onClick={() => setActiveCanvasTab('db')}
+                badge={dbSchema.tables.length}
+              />
+            </div>
+          )}
+
+          {activeCanvasTab === 'canvas' ? (
+            <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                edgeTypes={EDGE_TYPES}
+                onNodesChange={isPublished ? undefined : onNodesChange}
+                onEdgesChange={isPublished ? undefined : onEdgesChange}
+                onConnect={isPublished ? undefined : onConnect}
+                onEdgesDelete={isPublished ? undefined : saveTopology}
+                onNodeDoubleClick={onNodeDoubleClick}
+                onNodeDragStop={isPublished ? undefined : onNodeDragStop}
+                nodesDraggable={!isPublished}
+                nodesConnectable={!isPublished}
+                elementsSelectable={!isPublished}
+                fitView
+              >
+                <Controls />
+                <Background color="#e8e6dc" gap={28} size={1} />
+                {nodes.length === 0 && (
+                  <Panel position="top-center" style={{ marginTop: 40 }}>
+                    <div style={{
+                      background: 'rgba(255,255,255,0.9)',
+                      border: '0.8px solid rgba(31,30,29,0.12)',
+                      borderRadius: 10, padding: '14px 20px',
+                      fontSize: 13, color: '#73726c', textAlign: 'center',
+                      boxShadow: 'rgba(0,0,0,0.05) 0px 2px 8px',
+                    }}>
+                      No nodes yet — use AI chat or add nodes to <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>workflows/{workflowName}/nodes/</code>
+                    </div>
+                  </Panel>
+                )}
+              </ReactFlow>
+            </div>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <WorkflowDbView
+                workflowName={workflowName}
+                schema={dbSchema}
+                onRefresh={fetchDbSchema}
+              />
+            </div>
+          )}
         </div>
 
         {/* ── Chat panel ── */}
