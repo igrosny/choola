@@ -99,16 +99,14 @@ export default function AuthPage({ onAuth }) {
       }}>
 
         {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 7, marginBottom: 32 }}>
           <div style={{
-            width: 34, height: 34,
-            background: 'hsl(var(--accent-brand))',
-            borderRadius: 9,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: 15, fontWeight: 700,
+            width: 11, height: 11,
+            background: '#7aa8d4',
+            borderRadius: '50%',
             flexShrink: 0,
-          }}>◆</div>
-          <span style={{ fontSize: 18, fontWeight: 600, color: '#141413', letterSpacing: '-0.01em' }}>Choola</span>
+          }} />
+          <span style={{ fontSize: 18, fontWeight: 600, color: '#141413', letterSpacing: '-0.01em', lineHeight: 1 }}>Choola</span>
         </div>
 
         {/* Heading */}

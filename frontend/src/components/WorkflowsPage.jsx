@@ -379,15 +379,14 @@ export default function WorkflowsPage({ user, onOpenWorkflow, onSignOut }) {
         padding: '20px 12px',
       }}>
         {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 8px', marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, padding: '0 8px', marginBottom: 28 }}>
           <div style={{
-            width: 28, height: 28,
-            background: 'hsl(var(--accent-brand))',
-            borderRadius: 7,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: 12, fontWeight: 700, flexShrink: 0,
-          }}>◆</div>
-          <span style={{ fontSize: 15, fontWeight: 600, color: '#141413', letterSpacing: '-0.01em' }}>Choola</span>
+            width: 9, height: 9,
+            background: '#7aa8d4',
+            borderRadius: '50%',
+            flexShrink: 0,
+          }} />
+          <span style={{ fontSize: 15, fontWeight: 600, color: '#141413', letterSpacing: '-0.01em', lineHeight: 1 }}>Choola</span>
         </div>
 
         {/* Nav */}
