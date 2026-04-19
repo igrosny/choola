@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-18
+
 ### Added
+- Add ChromaDB vector database integration for workflows: new `VectorDB` core node, `files/chroma/` per-workflow storage, and `vector_add` / `vector_query` / `vector_get` / `vector_delete` / `vector_count` helpers on `BaseNode`
+- Add VectorDB schema and query API endpoints (`/api/workflows/<name>/vectordb/schema`, `/api/workflows/<name>/vectordb/query`) with a matching VectorDB tab in the workflow editor
+- Add Evaluations tab to the workflow editor: paginated run list with status, duration, and token counts, plus a collapsible JSON detail view with per-node input/output/error inspection and Copy/Download actions
+- Add evaluation API endpoints (`/api/workflows/<name>/evaluations`, `/api/workflows/<name>/evaluations/<run_id>`) that return summaries-only for listing and full JSON for detail
 - Add LLM token telemetry: `BaseNode.report_tokens()` sidechannel feeds a per-run tally and is persisted in `run_logs` (new `prompt_tokens` / `completion_tokens` columns) and evaluation JSON
 - Add engine-level cost circuit breaker enforcing two globals — `max_tokens_per_run` (per-run cap) and `max_tokens_per_hour` (rolling-hour cap across all runs); a breach raises `TokenLimitExceeded` and aborts the run
 - Instrument the core `LLM` node to report Claude `usage.input_tokens`/`output_tokens` and Gemini `usage_metadata.prompt_token_count`/`candidates_token_count`
+
+### Frontend
+- Update logo styles in `AuthPage` and `WorkflowsPage` for improved aesthetics
 
 ## [0.5.0] - 2026-04-18
 
