@@ -25,7 +25,7 @@ Coding agents are very good at writing small, self-contained functions with clea
 - **Full execution traces, every run** — each run produces an evaluation JSON with per-node input, output, timing, and errors. Agents use these to diagnose and fix workflows the same way a developer would.
 - **Visual editor + CLI, same source of truth** — the editor renders the same Python files the CLI runs. You can build in the browser, edit in your editor, and the two never drift.
 - **Branching, merging, and conditional routing** — fan a payload out to parallel branches, merge them back with per-parent access, or let any node decide at runtime which branches to activate via `__active_branches__`.
-- **Per-workflow SQLite, globals, and encrypted credentials** — state when you want it, none of it hidden. Each workflow gets its own isolated DB; credentials live in the engine's store and are fetched via `await self.get_credential(name)`.
+- **Per-workflow SQLite, vector DB, globals, and encrypted credentials** — state when you want it, none of it hidden. Each workflow gets its own isolated SQLite and ChromaDB vector store; credentials live in the engine's store and are fetched via `await self.get_credential(name)`.
 
 ---
 
@@ -45,6 +45,19 @@ In any empty directory:
 choola init          # Creates workflows/ and choola.db
 choola start         # Opens the visual editor at http://localhost:5000
 ```
+
+The editor lays each workflow out as a canvas of connected nodes you can drag, wire, and run:
+
+![Choola workflow canvas](docs/images/canvas-2.png)
+
+Each workflow also gets its own isolated SQLite database, vector store, and run evaluations — all inspectable from the editor:
+
+| | |
+|---|---|
+| ![Per-workflow SQLite database](docs/images/database.png) | ![Per-workflow vector database](docs/images/vectordb.png) |
+| **Database** — schema + query browser for the workflow's own SQLite | **VectorDB** — ChromaDB collections, schema, and similarity search |
+| ![Run evaluations with per-node input/output](docs/images/evaluations.png) | |
+| **Evaluations** — every run's per-node input, output, timing, and tokens | |
 
 ### Build a workflow with Claude Code
 
@@ -78,7 +91,7 @@ Every run writes `workflows/<name>/evaluations/<run_id>.json` containing:
 - Top-level `status`, total duration, initial and final payload
 - Per-node `input`, `output`, `status`, `duration_ms`, and full traceback on error
 
-This is the primary debugging surface. When something misbehaves, open the evaluation, find the node with `"status": "ERROR"`, read the traceback, fix the node, and use `choola replay` to re-execute just that node against its original input — no re-running expensive upstream LLM calls.
+This is the primary debugging surface. When something misbehaves, open the evaluation, find the node with `"status": "ERROR"`, read the traceback, fix the node, and use `choola replay` to re-execute just that node against its original input — no re-running expensive upstream LLM calls. The editor's **Evaluations** tab shows a paginated list of runs with status, duration, and token counts, and expands any run into the full per-node JSON with Copy/Download actions.
 
 ### Cost discipline, out of the box
 
@@ -86,6 +99,8 @@ Choola assumes workflows will touch paid APIs and bakes guardrails into the node
 
 - Nodes declare `@cost:` in their docstring. Unmarked nodes that call `get_credential()` are treated as paid until proven otherwise.
 - Paid loop nodes must expose `max_items` (small default, e.g. 20) and `max_consecutive_errors` (default 3). One bad API key cannot burn through a hundred calls.
+- **Engine-level token circuit breaker** — two globals, `max_tokens_per_run` (per-run cap) and `max_tokens_per_hour` (rolling-hour cap across all runs), raise `TokenLimitExceeded` and abort the run on breach. The `LLM` node reports Claude and Gemini usage automatically; any node can feed the tally via `BaseNode.report_tokens()`.
+- Per-run tallies are persisted to `run_logs` (`prompt_tokens` / `completion_tokens` columns) and surfaced in every evaluation JSON, so cost is inspectable alongside per-node timing.
 - The framework's own rule for coding agents is **replay, don't re-run** when iterating on a downstream fix — and **no live paid calls during scaffolding**, only import checks, until the operator approves the spend.
 - Classification and filter loops default to Haiku / Gemini Flash. Escalation to Sonnet/Opus is opt-in.
 
@@ -100,6 +115,7 @@ Choola assumes workflows will touch paid APIs and bakes guardrails into the node
 | `Gmail` | Send email via Gmail OAuth2 |
 | `HTTP` | Call any HTTP endpoint with templated params |
 | `DB` | Add a per-workflow SQLite database (schema declared in the node) |
+| `VectorDB` | Add a per-workflow ChromaDB vector store for embeddings and similarity search |
 
 Every core node is meant to be **extended, not instantiated directly** — your workflow's `nodes/` folder contains thin wrapper classes so the behavior stays yours to modify.
 
@@ -211,7 +227,8 @@ choola/                       # The pip-installable package
 │       ├── llm.py
 │       ├── gmail.py
 │       ├── http.py
-│       └── db.py
+│       ├── db.py
+│       └── vectordb.py
 └── static/dist/              # Pre-built React UI (rebuilt before release)
 
 frontend/                     # React + XyFlow editor (Vite)
@@ -270,6 +287,12 @@ The `@choola-node` docstring is not decoration — it is the agent-facing contra
 | `await self.get_credential(name)` | Fetch a stored credential — returns `None` if missing (raise a clear error in that case) |
 | `await self.db_query(sql, params)` | SELECT against the workflow's own SQLite at `files/db.sqlite`. Use `?` placeholders. |
 | `await self.db_execute(sql, params)` | INSERT/UPDATE/DELETE against the workflow DB. Use `?` placeholders. |
+| `await self.vector_add(collection, ids, documents, metadatas=None, embeddings=None)` | Upsert documents into the workflow's ChromaDB at `files/chroma/`. |
+| `await self.vector_query(collection, query_texts, n_results=10, where=None)` | Similarity search; returns ids, documents, metadatas, distances. |
+| `await self.vector_get(collection, ids)` | Fetch specific documents by id. |
+| `await self.vector_delete(collection, ids)` | Delete documents by id. |
+| `await self.vector_count(collection)` | Return the number of documents in a collection. |
+| `self.report_tokens(prompt, completion)` | Feed token usage into the per-run tally for the engine's cost circuit breaker. |
 
 ### Adding or changing a core node
 
@@ -329,6 +352,10 @@ python -m twine upload dist/*
 | POST | `/api/workflows/<name>/refresh` | Re-discover nodes from disk |
 | POST | `/api/workflows/<name>/chat` | Chat with Claude about the workflow (SSE) |
 | GET | `/api/workflows/<name>/trigger-info` | Get trigger type and config |
+| GET | `/api/workflows/<name>/evaluations` | List run evaluations (summaries: status, duration, tokens) |
+| GET | `/api/workflows/<name>/evaluations/<run_id>` | Full evaluation JSON for a single run |
+| GET | `/api/workflows/<name>/vectordb/schema` | List VectorDB collections and their schema |
+| POST | `/api/workflows/<name>/vectordb/query` | Run a similarity search against a collection |
 | GET | `/api/credentials` | List all credentials (values masked) |
 | POST | `/api/credentials` | Create/update credential |
 | DELETE | `/api/credentials/<name>` | Delete credential |

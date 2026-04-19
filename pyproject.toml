@@ -33,4 +33,5 @@ include = ["choola*"]
 choola = [
     "static/**/*",
     "CLAUDE.md",
+    "llms.txt",
 ]

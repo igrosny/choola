@@ -344,6 +344,15 @@ def init(target: str):
     else:
         click.secho("  Warning: bundled CLAUDE.md not found — skipping", fg="yellow")
 
+    # Copy bundled llms.txt into the project
+    bundled_llms = _PKG_ROOT / "llms.txt"
+    dest_llms = project_dir / "llms.txt"
+    if bundled_llms.exists():
+        shutil.copy2(bundled_llms, dest_llms)
+        click.secho(f"  Created  llms.txt", fg="green")
+    else:
+        click.secho("  Warning: bundled llms.txt not found — skipping", fg="yellow")
+
     click.echo(f"\n[choola] Project initialized at {project_dir}")
     click.echo("  Run `choola start` to launch the server.")
     click.echo("  Run `choola create <workflow-name>` to create your first workflow.")

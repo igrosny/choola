@@ -1,0 +1,6 @@
+# Choola Workflow Engine
+
+> This repository uses a unified instruction file for AI agents. 
+> Please read the full architectural guidelines, node constraints, and debugging rules here:
+
+[Choola Agent Instructions](./CLAUDE.md)

@@ -14,6 +14,21 @@ workflows/<name>/
   evaluations/            # Run evaluations — one JSON per run (auto-generated)
 ```
 
+## Planning a Node
+
+Before creating a new node — or modifying an existing one in a way that changes its inputs, outputs, `next_nodes`, side-effects, or responsibility — outline its I/O contract in plain prose. Do this in working notes or the plan file, not in code. For body-only edits that don't change the contract (bug fixes, refactors, log tweaks), skip this step and just edit; the "keep the `@choola-node` docstring in sync" rule in **Node Contract** below already covers the after-the-fact check.
+
+1. **One job per node (Single Responsibility).** A node may contain substantial, complex business logic, but it must do exactly *one distinct job*. Split mixed concerns across nodes and wire them via `next_nodes`.
+   - **Bad:** one node fetches user data from an external API, runs a risk calculation, and writes the result to the DB.
+   - **Good:** an HTTP node fetches, a "Risk Score" node does the math, a DB node writes. Each is independently replayable via `choola replay`.
+   - When extending an existing node, apply the same test: if the new behavior is a genuinely distinct job, add a new node downstream rather than growing the current one.
+2. **Write the contract first.** Before generating Python, list:
+   - the keys the node expects in its input payload (these become `@input-payload` in the docstring),
+   - the keys the node guarantees it adds or overwrites in the output payload (these become `@output-payload`).
+   If a key is produced by an upstream node, name which one. If it is optional, say so and give the default the node will assume. For modifications, list only what's *changing* versus the current docstring — not the whole contract.
+
+Keeping this step explicit makes the `@choola-node` docstring a transcript of the plan rather than an afterthought, and it exposes split/merge opportunities before any code is written.
+
 ## Node Contract
 
 Every node file MUST:
