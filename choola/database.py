@@ -40,18 +40,22 @@ CREATE TABLE IF NOT EXISTS globals (
 );
 
 CREATE TABLE IF NOT EXISTS run_logs (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id        TEXT    NOT NULL,
-    workflow_name TEXT    NOT NULL,
-    node_id       TEXT    NOT NULL,
-    node_type     TEXT    NOT NULL,
-    status        TEXT    NOT NULL DEFAULT 'IDLE',
-    payload_in    TEXT,
-    payload_out   TEXT,
-    error         TEXT,
-    started_at    TEXT,
-    finished_at   TEXT
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           TEXT    NOT NULL,
+    workflow_name    TEXT    NOT NULL,
+    node_id          TEXT    NOT NULL,
+    node_type        TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'IDLE',
+    payload_in       TEXT,
+    payload_out      TEXT,
+    error            TEXT,
+    started_at       TEXT,
+    finished_at      TEXT,
+    prompt_tokens    INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_run_logs_started_at ON run_logs(started_at);
 
 CREATE TABLE IF NOT EXISTS credentials (
     name        TEXT PRIMARY KEY,
@@ -75,6 +79,12 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
 def init_db(db_path: Path = DB_PATH) -> None:
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    # Backfill token columns on pre-existing run_logs tables.
+    existing_cols = {c["name"] for c in conn.execute("PRAGMA table_info(run_logs)").fetchall()}
+    if "prompt_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE run_logs ADD COLUMN prompt_tokens INTEGER DEFAULT 0")
+    if "completion_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE run_logs ADD COLUMN completion_tokens INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -110,14 +120,17 @@ def insert_run_log(
     error: str | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
     db_path: Path = DB_PATH,
 ) -> None:
     conn = get_connection(db_path)
     conn.execute(
         """INSERT INTO run_logs
            (run_id, workflow_name, node_id, node_type, status,
-            payload_in, payload_out, error, started_at, finished_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            payload_in, payload_out, error, started_at, finished_at,
+            prompt_tokens, completion_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_id,
             workflow_name,
@@ -129,6 +142,8 @@ def insert_run_log(
             error,
             started_at,
             finished_at,
+            int(prompt_tokens or 0),
+            int(completion_tokens or 0),
         ),
     )
     conn.commit()

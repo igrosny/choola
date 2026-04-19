@@ -19,6 +19,7 @@ The abstract base class for ALL nodes. Provides:
 - `async get_credential(name)` — retrieve stored credentials
 - `async db_query(sql, params)` / `db_execute(sql, params)` — read/write the workflow's own SQLite DB at `files/db.sqlite` (provision the schema with the `DB` core node)
 - `async vector_add / vector_query / vector_get / vector_delete / vector_count` — upsert and search the workflow's own ChromaDB store at `files/chroma/` (provision collections with the `VectorDB` core node)
+- `report_tokens(prompt_tokens, completion_tokens, model, provider)` — synchronous sidechannel for paid-LLM token telemetry; feeds the engine's `max_tokens_per_run` / `max_tokens_per_hour` circuit breakers and persists into `run_logs` and evaluation JSON
 - `ui_metadata()` — returns node metadata for the frontend
 
 **Required class attributes:**

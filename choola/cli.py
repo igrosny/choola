@@ -67,6 +67,8 @@ from choola.evaluations import (
     make_node_eval,
     save_evaluation,
 )
+from choola import tokens as token_tracker
+from choola.tokens import TokenLimitExceeded
 
 # Package root — used to locate the bundled CLAUDE.md
 _PKG_ROOT = Path(__file__).resolve().parent
@@ -201,6 +203,7 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
 
     initial_payload = capture_payload(payload)
     node_evals: list[dict] = []
+    token_tracker.init_run(run_id)
 
     for node_id in sorted_ids:
         node_entry = node_lookup[node_id]
@@ -218,6 +221,7 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
         instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
         instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
         instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
+        instance._token_reporter = functools.partial(token_tracker.report, run_id)
 
         now = datetime.now(timezone.utc).isoformat()
         payload_before = capture_payload(payload)
@@ -245,9 +249,29 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
             elapsed = _elapsed_str(now, finished)
             click.echo(f"\r  COMPLETED  {cls.name} -> {json.dumps(payload, default=str)}  ", nl=False)
             click.secho(elapsed, fg="green")
+            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
+            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
+            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
             insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished)
-            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished, payload_before, capture_payload(payload)))
+                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished,
+                           prompt_tokens=prompt_t, completion_tokens=completion_t)
+            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished,
+                                              payload_before, capture_payload(payload), tokens=node_tokens))
+
+            try:
+                token_tracker.check_limits(run_id)
+            except TokenLimitExceeded as cap_exc:
+                tb = str(cap_exc)
+                click.secho(f"  ABORTED  token cap breached: {tb}", fg="red")
+                evaluation = build_evaluation(
+                    run_id, workflow_name, context["started_at"], initial_payload,
+                    node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
+                )
+                save_evaluation(workflow_name, evaluation)
+                token_tracker.clear_run(run_id)
+                raise
+        except TokenLimitExceeded:
+            raise
         except Exception as exc:
             finished = datetime.now(timezone.utc).isoformat()
             stop_spinner.set()
@@ -255,19 +279,38 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
             tb = traceback.format_exc()
             click.echo(f"\r  ", nl=False)
             click.secho(f"ERROR  {cls.name}: {exc}", fg="red")
+            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
+            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
+            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
             insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
                            payload_in=payload_before, error=tb,
-                           started_at=now, finished_at=finished)
-            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished, payload_before, error=tb))
-            evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "ERROR", error=tb)
+                           started_at=now, finished_at=finished,
+                           prompt_tokens=prompt_t, completion_tokens=completion_t)
+            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished,
+                                              payload_before, error=tb, tokens=node_tokens))
+            evaluation = build_evaluation(
+                run_id, workflow_name, context["started_at"], initial_payload,
+                node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
+            )
             save_evaluation(workflow_name, evaluation)
+            token_tracker.clear_run(run_id)
             raise
 
-    evaluation = build_evaluation(run_id, workflow_name, context["started_at"], initial_payload, node_evals, "COMPLETED", payload)
+    run_tokens = token_tracker.get_run_breakdown(run_id)
+    evaluation = build_evaluation(
+        run_id, workflow_name, context["started_at"], initial_payload,
+        node_evals, "COMPLETED", payload, tokens=run_tokens,
+    )
     eval_path = save_evaluation(workflow_name, evaluation)
     click.echo(f"\n[choola] Workflow completed. Final payload:")
     click.echo(json.dumps(payload, indent=2, default=str))
     click.echo(f"[choola] Evaluation saved: {eval_path}")
+    if run_tokens["total_tokens"]:
+        click.echo(
+            f"[choola] Tokens used: {run_tokens['total_tokens']} "
+            f"(prompt={run_tokens['prompt_tokens']}, completion={run_tokens['completion_tokens']})"
+        )
+    token_tracker.clear_run(run_id)
     return payload
 
 

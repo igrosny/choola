@@ -220,6 +220,7 @@ Any node can use these (inherited from BaseNode):
 - `await self.vector_query(collection, query_texts=None, query_embeddings=None, n_results=10, where=None, where_document=None)` — nearest-neighbour search; returns ChromaDB's native result dict.
 - `await self.vector_get(collection, ids=None, where=None, limit=None)` / `vector_delete(...)` / `vector_count(collection)` — metadata-filtered fetch, deletion, and size.
 - To use the vector store, add the `VectorDB` core node and configure its `collections` field. Each workflow gets its own ChromaDB directory, so collections can't collide with other workflows.
+- `self.report_tokens(prompt_tokens, completion_tokens, model="", provider="")` — synchronous helper to tell the engine how many tokens a paid LLM call consumed. Nodes that talk to paid LLM APIs MUST call this after each API call. The engine persists the numbers in `run_logs` and the evaluation JSON, and enforces the `max_tokens_per_run` / `max_tokens_per_hour` globals (circuit breaker — a breach aborts the run with a `TokenLimitExceeded`). Token usage is reported via this sidechannel and is NOT part of the payload.
 
 
 ## Cost Discipline
@@ -243,6 +244,8 @@ Workflows regularly touch paid APIs (LLMs, third-party data providers). These ru
 6. **Cheapest model by default.** Classification and filter loops default to Haiku or Gemini Flash. Escalate to Sonnet/Opus only when the user asks.
 
 7. **Pre-filter before paying.** Inside a paid loop, skip items with empty/missing inputs before the API call. Empty inputs go to `skipped`, not `errored` — errored slots count against the circuit breaker.
+
+8. **Report token usage.** Any node that calls a paid LLM API MUST call `self.report_tokens(prompt, completion, model=..., provider=...)` after each call. This feeds the engine's global circuit breaker (`max_tokens_per_run`, `max_tokens_per_hour` — set via `await self.set_global(...)` or the `globals` table; `0`/absent = disabled) and populates `run_logs` + evaluation JSON for cost debugging. The core `LLM` node already does this; custom nodes must match the pattern.
 
 ## Evaluations — Debugging Workflow Runs
 

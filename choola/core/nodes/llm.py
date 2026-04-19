@@ -24,6 +24,7 @@
   - llm_model (str): The model that was used
   - llm_provider (str): "claude" or "gemini"
   - (all prior payload keys are preserved)
+  - (token usage is reported to the engine via self.report_tokens and captured in run_logs + evaluations — NOT in the payload)
 @config-fields:
   - credential_name (str, required): Name of the stored credential to use for API access
   - provider (select: claude, gemini): Which LLM provider to use
@@ -34,8 +35,9 @@
   - temperature (number, default=1.0): Sampling temperature (0.0 - 2.0)
 @example-input: {"name": "Alice", "question": "What is 2+2?"}
 @example-output: {"llm_response": "2+2 equals 4.", "llm_model": "claude-sonnet-4-20250514", "llm_provider": "claude", "name": "Alice", "question": "What is 2+2?"}
-@side-effects: Makes an HTTP call to an external LLM API
+@side-effects: Makes an HTTP call to an external LLM API; reports token usage via self.report_tokens
 @errors: Missing credential, invalid provider, API errors
+@cost: paid-per-call — one paid LLM call per execution
 """
 
 from typing import Any
@@ -156,6 +158,14 @@ class LLM(BaseNode):
             kwargs["system"] = system_prompt
 
         response = client.messages.create(**kwargs)
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.report_tokens(
+                prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+                completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+                model=model,
+                provider="claude",
+            )
         return response.content[0].text
 
     async def _call_gemini(
@@ -178,4 +188,12 @@ class LLM(BaseNode):
             contents=prompt,
             config=config,
         )
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            self.report_tokens(
+                prompt_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+                completion_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+                model=model,
+                provider="gemini",
+            )
         return response.text

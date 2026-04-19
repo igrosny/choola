@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add LLM token telemetry: `BaseNode.report_tokens()` sidechannel feeds a per-run tally and is persisted in `run_logs` (new `prompt_tokens` / `completion_tokens` columns) and evaluation JSON
+- Add engine-level cost circuit breaker enforcing two globals — `max_tokens_per_run` (per-run cap) and `max_tokens_per_hour` (rolling-hour cap across all runs); a breach raises `TokenLimitExceeded` and aborts the run
+- Instrument the core `LLM` node to report Claude `usage.input_tokens`/`output_tokens` and Gemini `usage_metadata.prompt_token_count`/`candidates_token_count`
+
 ## [0.5.0] - 2026-04-18
 
 ### Added

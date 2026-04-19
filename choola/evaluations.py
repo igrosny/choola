@@ -15,6 +15,7 @@ def build_evaluation(
     final_status: str,
     final_payload: dict | None = None,
     error: str | None = None,
+    tokens: dict | None = None,
 ) -> dict:
     """Assemble the evaluation dict from collected node execution data."""
     finished_at = datetime.now(timezone.utc).isoformat()
@@ -33,6 +34,7 @@ def build_evaluation(
         "nodes": node_evals,
         "final_payload": final_payload,
         "error": error,
+        "tokens": tokens or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "events": []},
     }
 
 
@@ -63,6 +65,7 @@ def make_node_eval(
     input_payload: dict,
     output_payload: dict | None = None,
     error: str | None = None,
+    tokens: dict | None = None,
 ) -> dict:
     """Build a single node evaluation entry."""
     started_dt = datetime.fromisoformat(started_at)
@@ -79,4 +82,5 @@ def make_node_eval(
         "input": input_payload,
         "output": output_payload,
         "error": error,
+        "tokens": tokens,
     }

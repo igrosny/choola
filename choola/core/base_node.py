@@ -68,6 +68,7 @@ class BaseNode(abc.ABC):
         self._vector_get = None
         self._vector_delete = None
         self._vector_count = None
+        self._token_reporter = None
 
     # ------------------------------------------------------------------
     # Persistent global helpers (backed by SQLite via the engine)
@@ -179,6 +180,27 @@ class BaseNode(abc.ABC):
         if self._vector_count is None:
             raise RuntimeError("Vector helpers not injected — run via the engine.")
         return await self._vector_count(collection)
+
+    # ------------------------------------------------------------------
+    # Token telemetry — report usage from paid LLM calls
+    # ------------------------------------------------------------------
+    def report_tokens(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        model: str = "",
+        provider: str = "",
+    ) -> None:
+        """Report LLM token usage to the engine for circuit breaking.
+
+        Paid-API nodes should call this after each provider call so the engine
+        can enforce `max_tokens_per_run` and `max_tokens_per_hour` caps and
+        persist usage in run_logs / evaluations. When the node is run outside
+        the engine (e.g. ad-hoc tests), the call is a no-op.
+        """
+        if self._token_reporter is None:
+            return
+        self._token_reporter(self.node_id, prompt_tokens, completion_tokens, model, provider)
 
     # ------------------------------------------------------------------
     # Contract — subclasses MUST implement
