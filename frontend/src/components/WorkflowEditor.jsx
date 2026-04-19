@@ -33,6 +33,7 @@ import 'prismjs/themes/prism-tomorrow.css';
 import ChatPanel from './ChatPanel';
 import WorkflowDbView from './WorkflowDbView';
 import WorkflowVectorDbView from './WorkflowVectorDbView';
+import WorkflowEvaluationsView from './WorkflowEvaluationsView';
 import '../App.css';
 
 // ── Status colors (light theme) ───────────────────────────
@@ -337,9 +338,10 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [credentials, setCredentials] = useState([]);
   const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
-  const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db' | 'vectordb'
+  const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db' | 'vectordb' | 'evaluations'
   const [dbSchema, setDbSchema] = useState(null); // { exists, tables, path }
   const [vectorSchema, setVectorSchema] = useState(null); // { exists, collections, path }
+  const [evalCount, setEvalCount] = useState(0);
   const logsEndRef = useRef(null);
 
   const isPublished = workflowStatus === 'published';
@@ -457,13 +459,23 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       .catch(() => setVectorSchema({ exists: false, collections: [] }));
   }, [workflowName]);
 
+  // Fetch evaluation total count (just for the tab badge).
+  const fetchEvalCount = useCallback(() => {
+    fetch(`/api/workflows/${workflowName}/evaluations?page=1&page_size=1`)
+      .then(r => r.json())
+      .then(d => setEvalCount(d.total || 0))
+      .catch(() => setEvalCount(0));
+  }, [workflowName]);
+
   useEffect(() => {
     setActiveCanvasTab('canvas');
     setDbSchema(null);
     setVectorSchema(null);
+    setEvalCount(0);
     fetchDbSchema();
     fetchVectorSchema();
-  }, [workflowName, fetchDbSchema, fetchVectorSchema]);
+    fetchEvalCount();
+  }, [workflowName, fetchDbSchema, fetchVectorSchema, fetchEvalCount]);
 
   const onConnect = useCallback(
     (params) => setEdges((eds) => addEdge({ ...params, type: 'deletable' }, eds)),
@@ -584,6 +596,8 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       // A run may have provisioned or modified the workflow's SQLite DB or ChromaDB
       fetchDbSchema();
       fetchVectorSchema();
+      // Every run saves an evaluation file — bump the count so the tab updates.
+      fetchEvalCount();
     });
     return bus;
   };
@@ -971,7 +985,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
 
         {/* ── Canvas area (tabs + canvas OR db view) ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          {(dbSchema?.exists || vectorSchema?.exists) && (
+          {(dbSchema?.exists || vectorSchema?.exists || evalCount > 0) && (
             <div style={{
               display: 'flex', alignItems: 'center', gap: 2,
               background: '#ffffff',
@@ -998,6 +1012,14 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                   active={activeCanvasTab === 'vectordb'}
                   onClick={() => setActiveCanvasTab('vectordb')}
                   badge={vectorSchema.collections.length}
+                />
+              )}
+              {evalCount > 0 && (
+                <CanvasTab
+                  label="Evaluations"
+                  active={activeCanvasTab === 'evaluations'}
+                  onClick={() => setActiveCanvasTab('evaluations')}
+                  badge={evalCount}
                 />
               )}
             </div>
@@ -1045,13 +1067,17 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                 onRefresh={fetchDbSchema}
               />
             </div>
-          ) : (
+          ) : activeCanvasTab === 'vectordb' ? (
             <div style={{ flex: 1, minHeight: 0 }}>
               <WorkflowVectorDbView
                 workflowName={workflowName}
                 schema={vectorSchema}
                 onRefresh={fetchVectorSchema}
               />
+            </div>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <WorkflowEvaluationsView workflowName={workflowName} />
             </div>
           )}
         </div>

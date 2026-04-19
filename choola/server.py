@@ -784,6 +784,71 @@ def api_workflow_vectordb_query(name: str):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/workflows/<name>/evaluations", methods=["GET"])
+def api_list_evaluations(name: str):
+    """Paginated list of evaluations (summaries only, newest first).
+
+    Each file can be hundreds of KB, so we read the JSON to pluck the
+    header fields and skip nested payloads. Sorted by started_at desc.
+    """
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        page_size = max(1, min(100, int(request.args.get("page_size", 20))))
+    except ValueError:
+        page_size = 20
+
+    eval_dir = WORKFLOWS_DIR / name / "evaluations"
+    if not eval_dir.exists():
+        return jsonify({"evaluations": [], "total": 0, "page": page, "page_size": page_size})
+
+    files = list(eval_dir.glob("*.json"))
+    summaries = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
+        nodes = data.get("nodes") or []
+        tokens = data.get("tokens") or {}
+        summaries.append({
+            "run_id": data.get("run_id") or f.stem,
+            "status": data.get("status"),
+            "started_at": data.get("started_at"),
+            "finished_at": data.get("finished_at"),
+            "duration_ms": data.get("duration_ms"),
+            "node_count": len(nodes),
+            "error_count": sum(1 for n in nodes if n.get("status") == "ERROR"),
+            "total_tokens": (tokens.get("total_tokens") if isinstance(tokens, dict) else 0) or 0,
+            "has_error": bool(data.get("error")),
+        })
+
+    summaries.sort(key=lambda s: s.get("started_at") or "", reverse=True)
+    total = len(summaries)
+    start = (page - 1) * page_size
+    paged = summaries[start:start + page_size]
+
+    return jsonify({
+        "evaluations": paged,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@app.route("/api/workflows/<name>/evaluations/<run_id>", methods=["GET"])
+def api_get_evaluation(name: str, run_id: str):
+    """Return the full evaluation JSON for a single run."""
+    if not re.match(r"^[A-Za-z0-9_\-]+$", run_id):
+        return jsonify({"error": "Invalid run_id"}), 400
+    path = WORKFLOWS_DIR / name / "evaluations" / f"{run_id}.json"
+    if not path.exists():
+        return jsonify({"error": "Not found"}), 404
+    return Response(path.read_text(), content_type="application/json")
+
+
 @app.route("/api/nodes/<path:node_type>/fields")
 def api_node_fields(node_type: str):
     """Return the fields metadata for a node type."""
