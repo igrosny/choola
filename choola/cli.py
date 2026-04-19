@@ -55,6 +55,11 @@ from choola.database import (
     upsert_credential,
     workflow_db_execute_async,
     workflow_db_query_async,
+    workflow_vector_add_async,
+    workflow_vector_count_async,
+    workflow_vector_delete_async,
+    workflow_vector_get_async,
+    workflow_vector_query_async,
 )
 from choola.evaluations import (
     build_evaluation,
@@ -208,6 +213,11 @@ async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[
         instance._db_get_credential = get_credential_async
         instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
         instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
+        instance._vector_add = functools.partial(workflow_vector_add_async, workflow_name)
+        instance._vector_query = functools.partial(workflow_vector_query_async, workflow_name)
+        instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
+        instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
+        instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
 
         now = datetime.now(timezone.utc).isoformat()
         payload_before = capture_payload(payload)
@@ -430,9 +440,10 @@ def nodes(workflow_name: str | None):
         import choola.core.nodes.manual_trigger as _mt
         import choola.core.nodes.http as _http
         import choola.core.nodes.db as _db
+        import choola.core.nodes.vectordb as _vdb
         seen = set()
         skip = {BaseNode, Trigger}
-        for mod in (_ft, _wt, _llm, _mt, _http, _db):
+        for mod in (_ft, _wt, _llm, _mt, _http, _db, _vdb):
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 if (
@@ -602,6 +613,11 @@ def replay(workflow_name: str, run_id: str, node_id: str, payload: str | None, n
         instance._db_get_credential = get_credential_async
         instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
         instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
+        instance._vector_add = functools.partial(workflow_vector_add_async, workflow_name)
+        instance._vector_query = functools.partial(workflow_vector_query_async, workflow_name)
+        instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
+        instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
+        instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
         return await instance.execute(input_payload, context)
 
     try:

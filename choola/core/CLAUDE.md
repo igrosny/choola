@@ -18,6 +18,7 @@ The abstract base class for ALL nodes. Provides:
 - `async get_global(key)` / `set_global(key, value)` — persistent SQLite globals (shared across workflows)
 - `async get_credential(name)` — retrieve stored credentials
 - `async db_query(sql, params)` / `db_execute(sql, params)` — read/write the workflow's own SQLite DB at `files/db.sqlite` (provision the schema with the `DB` core node)
+- `async vector_add / vector_query / vector_get / vector_delete / vector_count` — upsert and search the workflow's own ChromaDB store at `files/chroma/` (provision collections with the `VectorDB` core node)
 - `ui_metadata()` — returns node metadata for the frontend
 
 **Required class attributes:**
@@ -158,6 +159,42 @@ The abstract base class for ALL nodes. Provides:
 await self.db_execute("INSERT INTO items (name) VALUES (?)", ("widget",))
 rows = await self.db_query("SELECT * FROM items WHERE name = ?", ("widget",))
 # rows is a list[dict], each keyed by column name
+```
+
+## VectorDB (`choola.core.nodes.vectordb.VectorDB`)
+
+**Category:** processing
+**Purpose:** Provisions the workflow's own persistent ChromaDB store at `workflows/<name>/files/chroma/` — creates the configured collections. Put this node early in the graph; downstream nodes read/write via `await self.vector_add(...)`, `self.vector_query(...)`, and friends.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `collections` | json | yes | `["documents"]` | Either a list of collection names (strings) or a list of `{name, metadata}` dicts. Collections are created with `get_or_create_collection` so the node is idempotent. |
+
+**Output payload:** adds `vectordb_path` (str — absolute path to the Chroma directory) and `collections` (list of ensured collection names).
+
+**Notes:**
+- The Chroma directory and `files/` parent are auto-created on first use.
+- Every workflow gets its own isolated store — two workflows can reuse the same collection name without conflict.
+- Re-running the node is a no-op when the collections already exist.
+- Chroma's default embedding function downloads `all-MiniLM-L6-v2` on first use (~80 MB, cached under `~/.cache/chroma`). Supply pre-computed `embeddings` in `vector_add` to skip the default embedder entirely.
+- Pass Chroma index tuning (e.g. `{"hnsw:space": "cosine"}`) via the per-collection `metadata` dict when provisioning.
+
+**Using the data from other nodes:**
+```python
+# In any node extending BaseNode:
+await self.vector_add(
+    "documents",
+    ids=["doc-1", "doc-2"],
+    documents=["the quick brown fox", "a lazy dog"],
+    metadatas=[{"source": "rss"}, {"source": "rss"}],
+)
+
+result = await self.vector_query(
+    "documents", query_texts=["fox"], n_results=3, where={"source": "rss"}
+)
+# result["ids"], result["documents"], result["distances"] are lists-of-lists,
+# keyed per input query_text.
 ```
 
 ## Gmail (`choola.core.nodes.gmail.Gmail`)

@@ -216,6 +216,10 @@ Any node can use these (inherited from BaseNode):
 - `await self.db_query(sql, params)` — run a SELECT against the workflow's own SQLite DB at `files/db.sqlite`; returns `list[dict]` keyed by column name.
 - `await self.db_execute(sql, params)` — run INSERT/UPDATE/DELETE against the workflow's DB; returns affected rowcount. Use `?` placeholders — never string-concatenate values into the SQL.
 - To use the DB, add the `DB` core node to the workflow and configure its `schema` field with `CREATE TABLE IF NOT EXISTS ...`. Every workflow gets its own isolated SQLite file, so tables can't collide with other workflows.
+- `await self.vector_add(collection, ids, documents=None, metadatas=None, embeddings=None)` — upsert items into the workflow's ChromaDB store at `files/chroma/`. Supply `documents` for auto-embedding or `embeddings` for pre-computed vectors.
+- `await self.vector_query(collection, query_texts=None, query_embeddings=None, n_results=10, where=None, where_document=None)` — nearest-neighbour search; returns ChromaDB's native result dict.
+- `await self.vector_get(collection, ids=None, where=None, limit=None)` / `vector_delete(...)` / `vector_count(collection)` — metadata-filtered fetch, deletion, and size.
+- To use the vector store, add the `VectorDB` core node and configure its `collections` field. Each workflow gets its own ChromaDB directory, so collections can't collide with other workflows.
 
 
 ## Cost Discipline

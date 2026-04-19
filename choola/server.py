@@ -62,6 +62,11 @@ from choola.database import (
     upsert_credential,
     workflow_db_execute_async,
     workflow_db_query_async,
+    workflow_vector_add_async,
+    workflow_vector_count_async,
+    workflow_vector_delete_async,
+    workflow_vector_get_async,
+    workflow_vector_query_async,
 )
 
 # ------------------------------------------------------------------
@@ -329,6 +334,11 @@ async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_i
         instance._db_get_credential = get_credential_async
         instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
         instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
+        instance._vector_add = functools.partial(workflow_vector_add_async, workflow_name)
+        instance._vector_query = functools.partial(workflow_vector_query_async, workflow_name)
+        instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
+        instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
+        instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
 
         now = datetime.now(timezone.utc).isoformat()
         payload_before = capture_payload(node_input)

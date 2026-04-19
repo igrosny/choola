@@ -63,6 +63,11 @@ class BaseNode(abc.ABC):
         self._db_get_credential = None
         self._db_query = None
         self._db_execute = None
+        self._vector_add = None
+        self._vector_query = None
+        self._vector_get = None
+        self._vector_delete = None
+        self._vector_count = None
 
     # ------------------------------------------------------------------
     # Persistent global helpers (backed by SQLite via the engine)
@@ -103,6 +108,77 @@ class BaseNode(abc.ABC):
         if self._db_execute is None:
             raise RuntimeError("Database helpers not injected — run via the engine.")
         return await self._db_execute(sql, params)
+
+    # ------------------------------------------------------------------
+    # Per-workflow ChromaDB helpers (files/chroma/)
+    # ------------------------------------------------------------------
+    async def vector_add(
+        self,
+        collection: str,
+        ids: list[str],
+        documents: list[str] | None = None,
+        metadatas: list[dict] | None = None,
+        embeddings: list[list[float]] | None = None,
+    ) -> int:
+        """Upsert vectors into the workflow's ChromaDB collection.
+
+        Either `documents` (auto-embedded) or `embeddings` (pre-computed) must
+        be supplied — ChromaDB will raise if both are None. `ids` must be
+        unique per item and are used as the upsert key.
+        """
+        if self._vector_add is None:
+            raise RuntimeError("Vector helpers not injected — run via the engine.")
+        return await self._vector_add(collection, ids, documents, metadatas, embeddings)
+
+    async def vector_query(
+        self,
+        collection: str,
+        query_texts: list[str] | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        n_results: int = 10,
+        where: dict | None = None,
+        where_document: dict | None = None,
+    ) -> dict:
+        """Query the workflow's ChromaDB collection for nearest neighbours.
+
+        Returns a ChromaDB query result dict with keys `ids`, `documents`,
+        `metadatas`, `distances`, `embeddings` (each a list-of-lists keyed
+        per-query).
+        """
+        if self._vector_query is None:
+            raise RuntimeError("Vector helpers not injected — run via the engine.")
+        return await self._vector_query(
+            collection, query_texts, query_embeddings, n_results, where, where_document
+        )
+
+    async def vector_get(
+        self,
+        collection: str,
+        ids: list[str] | None = None,
+        where: dict | None = None,
+        limit: int | None = None,
+    ) -> dict:
+        """Fetch items from a collection by id or metadata filter (no similarity search)."""
+        if self._vector_get is None:
+            raise RuntimeError("Vector helpers not injected — run via the engine.")
+        return await self._vector_get(collection, ids, where, limit)
+
+    async def vector_delete(
+        self,
+        collection: str,
+        ids: list[str] | None = None,
+        where: dict | None = None,
+    ) -> None:
+        """Delete items from a collection by id or metadata filter."""
+        if self._vector_delete is None:
+            raise RuntimeError("Vector helpers not injected — run via the engine.")
+        await self._vector_delete(collection, ids, where)
+
+    async def vector_count(self, collection: str) -> int:
+        """Return the number of items in a collection."""
+        if self._vector_count is None:
+            raise RuntimeError("Vector helpers not injected — run via the engine.")
+        return await self._vector_count(collection)
 
     # ------------------------------------------------------------------
     # Contract — subclasses MUST implement

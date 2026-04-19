@@ -28,6 +28,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from cryptography.fernet import Fernet, InvalidToken
+
 # Database lives in the user's current working directory (project-local).
 DB_PATH = Path(os.getcwd()) / "choola.db"
 
@@ -146,6 +148,44 @@ async def set_global_async(key: str, value: Any, db_path: Path = DB_PATH) -> Non
 
 
 # ------------------------------------------------------------------
+# Credentials encryption — zero-config key manager
+# ------------------------------------------------------------------
+_FERNET_CACHE: Fernet | None = None
+
+
+def get_encryption_key() -> bytes:
+    """Resolve the Fernet key from env, a local keyfile, or by generating one.
+
+    Precedence:
+      1. CHOOLA_SECRET_KEY env var.
+      2. .choola_key file in the current working directory.
+      3. Freshly generated key written to .choola_key (0600 when possible).
+    """
+    env_key = os.environ.get("CHOOLA_SECRET_KEY")
+    if env_key:
+        return env_key.encode() if isinstance(env_key, str) else env_key
+
+    key_file = Path.cwd() / ".choola_key"
+    if key_file.exists():
+        return key_file.read_bytes().strip()
+
+    key = Fernet.generate_key()
+    key_file.write_bytes(key)
+    try:
+        os.chmod(key_file, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+    return key
+
+
+def _get_fernet() -> Fernet:
+    global _FERNET_CACHE
+    if _FERNET_CACHE is None:
+        _FERNET_CACHE = Fernet(get_encryption_key())
+    return _FERNET_CACHE
+
+
+# ------------------------------------------------------------------
 # Credentials helpers
 # ------------------------------------------------------------------
 def list_credentials(db_path: Path = DB_PATH) -> list[dict]:
@@ -157,17 +197,27 @@ def list_credentials(db_path: Path = DB_PATH) -> list[dict]:
 
 
 def get_credential(name: str, db_path: Path = DB_PATH) -> dict | None:
-    """Return a single credential by name (full value included)."""
+    """Return a single credential by name (full value included, decrypted)."""
     conn = get_connection(db_path)
     row = conn.execute("SELECT name, provider, value, created_at, updated_at FROM credentials WHERE name = ?", (name,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    record = dict(row)
+    stored = record["value"]
+    try:
+        record["value"] = _get_fernet().decrypt(stored.encode()).decode()
+    except InvalidToken:
+        # Pre-encryption plaintext credential — return as-is for backward compat.
+        record["value"] = stored
+    return record
 
 
 def upsert_credential(name: str, provider: str, value: str, db_path: Path = DB_PATH) -> None:
-    """Insert or update a credential."""
+    """Insert or update a credential. The value is encrypted at rest."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
+    encrypted = _get_fernet().encrypt(value.encode()).decode()
     conn = get_connection(db_path)
     conn.execute(
         """INSERT INTO credentials (name, provider, value, created_at, updated_at)
@@ -175,7 +225,7 @@ def upsert_credential(name: str, provider: str, value: str, db_path: Path = DB_P
            ON CONFLICT(name) DO UPDATE SET provider = excluded.provider,
                                            value = excluded.value,
                                            updated_at = excluded.updated_at""",
-        (name, provider, value, now, now),
+        (name, provider, encrypted, now, now),
     )
     conn.commit()
     conn.close()
@@ -246,6 +296,200 @@ async def workflow_db_execute_async(
 
 async def workflow_db_executescript_async(workflow_name: str, sql: str) -> None:
     _workflow_db_executescript_sync(workflow_name, sql)
+
+
+# ------------------------------------------------------------------
+# Per-workflow ChromaDB (persistent vector store at files/chroma/)
+# ------------------------------------------------------------------
+# Cached per-workflow PersistentClient — chromadb keeps the store consistent
+# across multiple clients against the same path, but reusing a single client
+# avoids the repeated startup cost on every call.
+_vector_clients: dict[str, Any] = {}
+
+
+def workflow_vectordb_path(workflow_name: str) -> Path:
+    """Return the directory that holds the workflow's ChromaDB persistent store."""
+    chroma_dir = Path.cwd() / "workflows" / workflow_name / "files" / "chroma"
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    return chroma_dir
+
+
+def _workflow_vector_client(workflow_name: str):
+    client = _vector_clients.get(workflow_name)
+    if client is not None:
+        return client
+    import chromadb
+    client = chromadb.PersistentClient(path=str(workflow_vectordb_path(workflow_name)))
+    _vector_clients[workflow_name] = client
+    return client
+
+
+def _workflow_vector_collection(workflow_name: str, collection: str, create: bool = True):
+    client = _workflow_vector_client(workflow_name)
+    if create:
+        return client.get_or_create_collection(name=collection)
+    return client.get_collection(name=collection)
+
+
+def _workflow_vector_add_sync(
+    workflow_name: str,
+    collection: str,
+    ids: list[str],
+    documents: list[str] | None,
+    metadatas: list[dict] | None,
+    embeddings: list[list[float]] | None,
+) -> int:
+    col = _workflow_vector_collection(workflow_name, collection, create=True)
+    kwargs: dict[str, Any] = {"ids": ids}
+    if documents is not None:
+        kwargs["documents"] = documents
+    if metadatas is not None:
+        kwargs["metadatas"] = metadatas
+    if embeddings is not None:
+        kwargs["embeddings"] = embeddings
+    col.upsert(**kwargs)
+    return len(ids)
+
+
+def _workflow_vector_query_sync(
+    workflow_name: str,
+    collection: str,
+    query_texts: list[str] | None,
+    query_embeddings: list[list[float]] | None,
+    n_results: int,
+    where: dict | None,
+    where_document: dict | None,
+) -> dict:
+    col = _workflow_vector_collection(workflow_name, collection, create=False)
+    kwargs: dict[str, Any] = {"n_results": n_results}
+    if query_texts is not None:
+        kwargs["query_texts"] = query_texts
+    if query_embeddings is not None:
+        kwargs["query_embeddings"] = query_embeddings
+    if where is not None:
+        kwargs["where"] = where
+    if where_document is not None:
+        kwargs["where_document"] = where_document
+    return col.query(**kwargs)
+
+
+def _workflow_vector_get_sync(
+    workflow_name: str,
+    collection: str,
+    ids: list[str] | None,
+    where: dict | None,
+    limit: int | None,
+) -> dict:
+    col = _workflow_vector_collection(workflow_name, collection, create=False)
+    kwargs: dict[str, Any] = {}
+    if ids is not None:
+        kwargs["ids"] = ids
+    if where is not None:
+        kwargs["where"] = where
+    if limit is not None:
+        kwargs["limit"] = limit
+    return col.get(**kwargs)
+
+
+def _workflow_vector_delete_sync(
+    workflow_name: str,
+    collection: str,
+    ids: list[str] | None,
+    where: dict | None,
+) -> None:
+    col = _workflow_vector_collection(workflow_name, collection, create=False)
+    kwargs: dict[str, Any] = {}
+    if ids is not None:
+        kwargs["ids"] = ids
+    if where is not None:
+        kwargs["where"] = where
+    col.delete(**kwargs)
+
+
+def _workflow_vector_count_sync(workflow_name: str, collection: str) -> int:
+    col = _workflow_vector_collection(workflow_name, collection, create=False)
+    return col.count()
+
+
+def _workflow_vector_create_collection_sync(
+    workflow_name: str, collection: str, metadata: dict | None
+) -> None:
+    client = _workflow_vector_client(workflow_name)
+    client.get_or_create_collection(name=collection, metadata=metadata or None)
+
+
+def _workflow_vector_list_collections_sync(workflow_name: str) -> list[dict]:
+    client = _workflow_vector_client(workflow_name)
+    out: list[dict] = []
+    for col in client.list_collections():
+        try:
+            instance = client.get_collection(name=col.name)
+            count = instance.count()
+        except Exception:
+            count = None
+        out.append({"name": col.name, "metadata": dict(col.metadata or {}), "count": count})
+    return out
+
+
+async def workflow_vector_add_async(
+    workflow_name: str,
+    collection: str,
+    ids: list[str],
+    documents: list[str] | None = None,
+    metadatas: list[dict] | None = None,
+    embeddings: list[list[float]] | None = None,
+) -> int:
+    return _workflow_vector_add_sync(
+        workflow_name, collection, ids, documents, metadatas, embeddings
+    )
+
+
+async def workflow_vector_query_async(
+    workflow_name: str,
+    collection: str,
+    query_texts: list[str] | None = None,
+    query_embeddings: list[list[float]] | None = None,
+    n_results: int = 10,
+    where: dict | None = None,
+    where_document: dict | None = None,
+) -> dict:
+    return _workflow_vector_query_sync(
+        workflow_name, collection, query_texts, query_embeddings,
+        n_results, where, where_document,
+    )
+
+
+async def workflow_vector_get_async(
+    workflow_name: str,
+    collection: str,
+    ids: list[str] | None = None,
+    where: dict | None = None,
+    limit: int | None = None,
+) -> dict:
+    return _workflow_vector_get_sync(workflow_name, collection, ids, where, limit)
+
+
+async def workflow_vector_delete_async(
+    workflow_name: str,
+    collection: str,
+    ids: list[str] | None = None,
+    where: dict | None = None,
+) -> None:
+    _workflow_vector_delete_sync(workflow_name, collection, ids, where)
+
+
+async def workflow_vector_count_async(workflow_name: str, collection: str) -> int:
+    return _workflow_vector_count_sync(workflow_name, collection)
+
+
+async def workflow_vector_create_collection_async(
+    workflow_name: str, collection: str, metadata: dict | None = None
+) -> None:
+    _workflow_vector_create_collection_sync(workflow_name, collection, metadata)
+
+
+async def workflow_vector_list_collections_async(workflow_name: str) -> list[dict]:
+    return _workflow_vector_list_collections_sync(workflow_name)
 
 
 if __name__ == "__main__":
