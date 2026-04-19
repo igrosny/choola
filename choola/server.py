@@ -665,6 +665,86 @@ def api_workflow_db_query(name: str):
         conn.close()
 
 
+@app.route("/api/workflows/<name>/vectordb/schema", methods=["GET"])
+def api_workflow_vectordb_schema(name: str):
+    """List the workflow's ChromaDB collections with their item counts."""
+    chroma_dir = WORKFLOWS_DIR / name / "files" / "chroma"
+    if not chroma_dir.exists():
+        return jsonify({"exists": False, "collections": []})
+
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(chroma_dir))
+        cols = []
+        for col in client.list_collections():
+            try:
+                instance = client.get_collection(name=col.name)
+                count = instance.count()
+            except Exception:
+                count = None
+            cols.append({
+                "name": col.name,
+                "metadata": dict(col.metadata or {}),
+                "count": count,
+            })
+        return jsonify({"exists": True, "collections": cols, "path": str(chroma_dir)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/workflows/<name>/vectordb/query", methods=["POST"])
+def api_workflow_vectordb_query(name: str):
+    """Similarity-search a collection in the workflow's ChromaDB.
+
+    Body: { collection, query, n_results? }
+    """
+    import time
+
+    chroma_dir = WORKFLOWS_DIR / name / "files" / "chroma"
+    if not chroma_dir.exists():
+        return jsonify({"error": "Vector store does not exist for this workflow."}), 404
+
+    data = request.get_json(silent=True) or {}
+    collection = (data.get("collection") or "").strip()
+    query_text = (data.get("query") or "").strip()
+    n_results = int(data.get("n_results") or 10)
+
+    if not collection:
+        return jsonify({"error": "collection is required"}), 400
+    if not query_text:
+        return jsonify({"error": "query is required"}), 400
+
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(chroma_dir))
+        col = client.get_collection(name=collection)
+        start = time.time()
+        result = col.query(query_texts=[query_text], n_results=max(1, min(n_results, 100)))
+        duration_ms = int((time.time() - start) * 1000)
+        # ChromaDB returns keys as lists-of-lists (one per input query). Flatten.
+        ids = (result.get("ids") or [[]])[0]
+        documents = (result.get("documents") or [[]])[0]
+        metadatas = (result.get("metadatas") or [[]])[0]
+        distances = (result.get("distances") or [[]])[0]
+        hits = [
+            {
+                "id": i,
+                "document": d,
+                "metadata": m or {},
+                "distance": dist,
+            }
+            for i, d, m, dist in zip(ids, documents, metadatas, distances)
+        ]
+        return jsonify({
+            "collection": collection,
+            "query": query_text,
+            "hits": hits,
+            "duration_ms": duration_ms,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/nodes/<path:node_type>/fields")
 def api_node_fields(node_type: str):
     """Return the fields metadata for a node type."""

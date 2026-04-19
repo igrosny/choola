@@ -32,6 +32,7 @@ import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
 import ChatPanel from './ChatPanel';
 import WorkflowDbView from './WorkflowDbView';
+import WorkflowVectorDbView from './WorkflowVectorDbView';
 import '../App.css';
 
 // ── Status colors (light theme) ───────────────────────────
@@ -336,8 +337,9 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [credentials, setCredentials] = useState([]);
   const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
-  const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db'
+  const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db' | 'vectordb'
   const [dbSchema, setDbSchema] = useState(null); // { exists, tables, path }
+  const [vectorSchema, setVectorSchema] = useState(null); // { exists, collections, path }
   const logsEndRef = useRef(null);
 
   const isPublished = workflowStatus === 'published';
@@ -447,11 +449,21 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       .catch(() => setDbSchema({ exists: false, tables: [] }));
   }, [workflowName]);
 
+  // Fetch the workflow's ChromaDB collections. Called on mount and after runs.
+  const fetchVectorSchema = useCallback(() => {
+    fetch(`/api/workflows/${workflowName}/vectordb/schema`)
+      .then(r => r.json())
+      .then(setVectorSchema)
+      .catch(() => setVectorSchema({ exists: false, collections: [] }));
+  }, [workflowName]);
+
   useEffect(() => {
     setActiveCanvasTab('canvas');
     setDbSchema(null);
+    setVectorSchema(null);
     fetchDbSchema();
-  }, [workflowName, fetchDbSchema]);
+    fetchVectorSchema();
+  }, [workflowName, fetchDbSchema, fetchVectorSchema]);
 
   const onConnect = useCallback(
     (params) => setEdges((eds) => addEdge({ ...params, type: 'deletable' }, eds)),
@@ -569,8 +581,9 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
       } else {
         setLogs(prev => [...prev, `[ERROR] ${data.error}`]);
       }
-      // A run may have provisioned or modified the workflow's SQLite DB
+      // A run may have provisioned or modified the workflow's SQLite DB or ChromaDB
       fetchDbSchema();
+      fetchVectorSchema();
     });
     return bus;
   };
@@ -958,7 +971,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
 
         {/* ── Canvas area (tabs + canvas OR db view) ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          {dbSchema?.exists && (
+          {(dbSchema?.exists || vectorSchema?.exists) && (
             <div style={{
               display: 'flex', alignItems: 'center', gap: 2,
               background: '#ffffff',
@@ -971,12 +984,22 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                 active={activeCanvasTab === 'canvas'}
                 onClick={() => setActiveCanvasTab('canvas')}
               />
-              <CanvasTab
-                label="Database"
-                active={activeCanvasTab === 'db'}
-                onClick={() => setActiveCanvasTab('db')}
-                badge={dbSchema.tables.length}
-              />
+              {dbSchema?.exists && (
+                <CanvasTab
+                  label="Database"
+                  active={activeCanvasTab === 'db'}
+                  onClick={() => setActiveCanvasTab('db')}
+                  badge={dbSchema.tables.length}
+                />
+              )}
+              {vectorSchema?.exists && (
+                <CanvasTab
+                  label="VectorDB"
+                  active={activeCanvasTab === 'vectordb'}
+                  onClick={() => setActiveCanvasTab('vectordb')}
+                  badge={vectorSchema.collections.length}
+                />
+              )}
             </div>
           )}
 
@@ -1014,12 +1037,20 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                 )}
               </ReactFlow>
             </div>
-          ) : (
+          ) : activeCanvasTab === 'db' ? (
             <div style={{ flex: 1, minHeight: 0 }}>
               <WorkflowDbView
                 workflowName={workflowName}
                 schema={dbSchema}
                 onRefresh={fetchDbSchema}
+              />
+            </div>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <WorkflowVectorDbView
+                workflowName={workflowName}
+                schema={vectorSchema}
+                onRefresh={fetchVectorSchema}
               />
             </div>
           )}
