@@ -31,6 +31,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
 import ChatPanel from './ChatPanel';
+import TerminalPanel from './TerminalPanel';
 import WorkflowDbView from './WorkflowDbView';
 import WorkflowVectorDbView from './WorkflowVectorDbView';
 import WorkflowEvaluationsView from './WorkflowEvaluationsView';
@@ -339,6 +340,8 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [credentials, setCredentials] = useState([]);
   const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
   const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db' | 'vectordb' | 'evaluations'
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(260);
   const [dbSchema, setDbSchema] = useState(null); // { exists, tables, path }
   const [vectorSchema, setVectorSchema] = useState(null); // { exists, collections, path }
   const [evalCount, setEvalCount] = useState(0);
@@ -985,101 +988,167 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
 
         {/* ── Canvas area (tabs + canvas OR db view) ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          {(dbSchema?.exists || vectorSchema?.exists || evalCount > 0) && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 2,
-              background: '#ffffff',
-              borderBottom: '0.8px solid rgba(31,30,29,0.1)',
-              padding: '0 14px',
-              flexShrink: 0,
-            }}>
-              <CanvasTab
-                label="Canvas"
-                active={activeCanvasTab === 'canvas'}
-                onClick={() => setActiveCanvasTab('canvas')}
-              />
-              {dbSchema?.exists && (
-                <CanvasTab
-                  label="Database"
-                  active={activeCanvasTab === 'db'}
-                  onClick={() => setActiveCanvasTab('db')}
-                  badge={dbSchema.tables.length}
-                />
+          {/* Content split: main content on top, optional terminal at bottom */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              {(dbSchema?.exists || vectorSchema?.exists || evalCount > 0) && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 2,
+                  background: '#ffffff',
+                  borderBottom: '0.8px solid rgba(31,30,29,0.1)',
+                  padding: '0 14px',
+                  flexShrink: 0,
+                }}>
+                  <CanvasTab
+                    label="Canvas"
+                    active={activeCanvasTab === 'canvas'}
+                    onClick={() => setActiveCanvasTab('canvas')}
+                  />
+                  {dbSchema?.exists && (
+                    <CanvasTab
+                      label="Database"
+                      active={activeCanvasTab === 'db'}
+                      onClick={() => setActiveCanvasTab('db')}
+                      badge={dbSchema.tables.length}
+                    />
+                  )}
+                  {vectorSchema?.exists && (
+                    <CanvasTab
+                      label="VectorDB"
+                      active={activeCanvasTab === 'vectordb'}
+                      onClick={() => setActiveCanvasTab('vectordb')}
+                      badge={vectorSchema.collections.length}
+                    />
+                  )}
+                  {evalCount > 0 && (
+                    <CanvasTab
+                      label="Evaluations"
+                      active={activeCanvasTab === 'evaluations'}
+                      onClick={() => setActiveCanvasTab('evaluations')}
+                      badge={evalCount}
+                    />
+                  )}
+                </div>
               )}
-              {vectorSchema?.exists && (
-                <CanvasTab
-                  label="VectorDB"
-                  active={activeCanvasTab === 'vectordb'}
-                  onClick={() => setActiveCanvasTab('vectordb')}
-                  badge={vectorSchema.collections.length}
-                />
-              )}
-              {evalCount > 0 && (
-                <CanvasTab
-                  label="Evaluations"
-                  active={activeCanvasTab === 'evaluations'}
-                  onClick={() => setActiveCanvasTab('evaluations')}
-                  badge={evalCount}
-                />
-              )}
-            </div>
-          )}
 
-          {activeCanvasTab === 'canvas' ? (
-            <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                edgeTypes={EDGE_TYPES}
-                onNodesChange={isPublished ? undefined : onNodesChange}
-                onEdgesChange={isPublished ? undefined : onEdgesChange}
-                onConnect={isPublished ? undefined : onConnect}
-                onEdgesDelete={isPublished ? undefined : saveTopology}
-                onNodeDoubleClick={onNodeDoubleClick}
-                onNodeDragStop={isPublished ? undefined : onNodeDragStop}
-                nodesDraggable={!isPublished}
-                nodesConnectable={!isPublished}
-                elementsSelectable={!isPublished}
-                fitView
-              >
-                <Controls />
-                <Background color="#e8e6dc" gap={28} size={1} />
-                {nodes.length === 0 && (
-                  <Panel position="top-center" style={{ marginTop: 40 }}>
-                    <div style={{
-                      background: 'rgba(255,255,255,0.9)',
-                      border: '0.8px solid rgba(31,30,29,0.12)',
-                      borderRadius: 10, padding: '14px 20px',
-                      fontSize: 13, color: '#73726c', textAlign: 'center',
-                      boxShadow: 'rgba(0,0,0,0.05) 0px 2px 8px',
-                    }}>
-                      No nodes yet — use AI chat or add nodes to <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>workflows/{workflowName}/nodes/</code>
-                    </div>
-                  </Panel>
-                )}
-              </ReactFlow>
+              {activeCanvasTab === 'canvas' ? (
+                <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+                  <ReactFlow
+                    nodes={nodes}
+                    edges={edges}
+                    edgeTypes={EDGE_TYPES}
+                    onNodesChange={isPublished ? undefined : onNodesChange}
+                    onEdgesChange={isPublished ? undefined : onEdgesChange}
+                    onConnect={isPublished ? undefined : onConnect}
+                    onEdgesDelete={isPublished ? undefined : saveTopology}
+                    onNodeDoubleClick={onNodeDoubleClick}
+                    onNodeDragStop={isPublished ? undefined : onNodeDragStop}
+                    nodesDraggable={!isPublished}
+                    nodesConnectable={!isPublished}
+                    elementsSelectable={!isPublished}
+                    fitView
+                  >
+                    <Controls />
+                    <Background color="#e8e6dc" gap={28} size={1} />
+                    {nodes.length === 0 && (
+                      <Panel position="top-center" style={{ marginTop: 40 }}>
+                        <div style={{
+                          background: 'rgba(255,255,255,0.9)',
+                          border: '0.8px solid rgba(31,30,29,0.12)',
+                          borderRadius: 10, padding: '14px 20px',
+                          fontSize: 13, color: '#73726c', textAlign: 'center',
+                          boxShadow: 'rgba(0,0,0,0.05) 0px 2px 8px',
+                        }}>
+                          No nodes yet — use AI chat or add nodes to <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>workflows/{workflowName}/nodes/</code>
+                        </div>
+                      </Panel>
+                    )}
+                  </ReactFlow>
+                </div>
+              ) : activeCanvasTab === 'db' ? (
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <WorkflowDbView
+                    workflowName={workflowName}
+                    schema={dbSchema}
+                    onRefresh={fetchDbSchema}
+                  />
+                </div>
+              ) : activeCanvasTab === 'vectordb' ? (
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <WorkflowVectorDbView
+                    workflowName={workflowName}
+                    schema={vectorSchema}
+                    onRefresh={fetchVectorSchema}
+                  />
+                </div>
+              ) : (
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <WorkflowEvaluationsView workflowName={workflowName} />
+                </div>
+              )}
             </div>
-          ) : activeCanvasTab === 'db' ? (
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <WorkflowDbView
-                workflowName={workflowName}
-                schema={dbSchema}
-                onRefresh={fetchDbSchema}
-              />
-            </div>
-          ) : activeCanvasTab === 'vectordb' ? (
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <WorkflowVectorDbView
-                workflowName={workflowName}
-                schema={vectorSchema}
-                onRefresh={fetchVectorSchema}
-              />
-            </div>
-          ) : (
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <WorkflowEvaluationsView workflowName={workflowName} />
-            </div>
-          )}
+
+            {terminalOpen && (
+              <>
+                <div
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const startY = e.clientY;
+                    const startH = terminalHeight;
+                    const onMove = (ev) => {
+                      const next = Math.min(800, Math.max(120, startH + (startY - ev.clientY)));
+                      setTerminalHeight(next);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('mousemove', onMove);
+                      window.removeEventListener('mouseup', onUp);
+                      document.body.style.userSelect = '';
+                    };
+                    document.body.style.userSelect = 'none';
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                  }}
+                  style={{
+                    height: 5,
+                    cursor: 'row-resize',
+                    background: 'rgba(31,30,29,0.08)',
+                    borderTop: '0.8px solid rgba(31,30,29,0.1)',
+                    borderBottom: '0.8px solid rgba(31,30,29,0.1)',
+                    flexShrink: 0,
+                  }}
+                />
+                <div style={{ height: terminalHeight, flexShrink: 0, minHeight: 0 }}>
+                  <TerminalPanel visible={terminalOpen} />
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Footer bar */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '4px 10px',
+            background: '#faf9f5',
+            borderTop: '0.8px solid rgba(31,30,29,0.1)',
+            flexShrink: 0,
+            height: 28,
+          }}>
+            <button
+              onClick={() => setTerminalOpen(prev => !prev)}
+              title={terminalOpen ? 'Close terminal' : 'Open terminal'}
+              style={{
+                border: 'none', background: terminalOpen ? '#e8e6dc' : 'transparent',
+                color: '#3d3d3a', fontSize: 11,
+                padding: '3px 8px', borderRadius: 5,
+                cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontFamily: 'var(--font-ui)',
+              }}
+            >
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1 }}>›_</span>
+              Terminal
+            </button>
+          </div>
         </div>
 
         {/* ── Chat panel ── */}

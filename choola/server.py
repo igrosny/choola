@@ -42,6 +42,7 @@ from typing import Any
 
 import anthropic
 from flask import Flask, Response, jsonify, request
+from flask_sock import Sock
 
 from choola.core.base_node import BaseNode
 from choola.evaluations import (
@@ -84,6 +85,7 @@ WORKFLOWS_DIR = CWD / "workflows"
 _STATIC_DIR = ROOT / "static" / "dist"
 
 app = Flask(__name__, static_folder=str(_STATIC_DIR), static_url_path="/")
+sock = Sock(app)
 
 # Global registries populated at startup
 node_registry: dict[str, type[BaseNode]] = {}        # "module.ClassName" -> class
@@ -1583,6 +1585,103 @@ def webhook_handler(webhook_path: str):
             return jsonify(result)
         except Exception as exc:
             return jsonify({"status": "ERROR", "error": str(exc), "run_id": run_id}), 500
+
+
+# ------------------------------------------------------------------
+# Terminal (PTY over WebSocket)
+# ------------------------------------------------------------------
+@sock.route("/api/terminal")
+def terminal_socket(ws):
+    """Bridge a bash pty running in CWD with a browser xterm instance.
+
+    Client messages are JSON:
+      {"type": "input",  "data": "<str>"}       - stdin
+      {"type": "resize", "rows": N, "cols": N}  - window size
+    Server messages are raw strings containing pty stdout bytes decoded as utf-8.
+    """
+    import fcntl
+    import pty
+    import select
+    import signal
+    import struct
+    import termios
+
+    shell = os.environ.get("SHELL", "/bin/bash")
+    pid, fd = pty.fork()
+    if pid == 0:
+        # child: exec the shell in the user's project cwd
+        try:
+            os.chdir(str(CWD))
+        except Exception:
+            pass
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+        os.execvpe(shell, [shell], env)
+
+    # parent: bridge fd <-> websocket
+    stop = threading.Event()
+
+    def _set_winsize(rows: int, cols: int) -> None:
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        except Exception:
+            pass
+
+    def _reader():
+        try:
+            while not stop.is_set():
+                r, _, _ = select.select([fd], [], [], 0.2)
+                if fd in r:
+                    try:
+                        data = os.read(fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    try:
+                        ws.send(data.decode("utf-8", errors="replace"))
+                    except Exception:
+                        break
+        finally:
+            stop.set()
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+    try:
+        while not stop.is_set():
+            msg = ws.receive(timeout=1)
+            if msg is None:
+                if stop.is_set():
+                    break
+                continue
+            try:
+                parsed = json.loads(msg)
+            except Exception:
+                continue
+            mtype = parsed.get("type")
+            if mtype == "input":
+                data = parsed.get("data", "")
+                try:
+                    os.write(fd, data.encode("utf-8"))
+                except OSError:
+                    break
+            elif mtype == "resize":
+                _set_winsize(int(parsed.get("rows", 24)), int(parsed.get("cols", 80)))
+    finally:
+        stop.set()
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, signal.SIGHUP)
+        except Exception:
+            pass
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------

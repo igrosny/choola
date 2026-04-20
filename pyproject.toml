@@ -20,6 +20,7 @@ dependencies = [
     "google-auth>=2.0",
     "cryptography>=42.0",
     "chromadb>=0.5",
+    "flask-sock>=0.7",
 ]
 
 [project.scripts]
