@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-export default function TerminalPanel({ visible }) {
+export default function TerminalPanel({ visible, workflowName }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -33,7 +33,8 @@ export default function TerminalPanel({ visible }) {
     fitRef.current = fit;
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/terminal`);
+    const qs = workflowName ? `?workflow=${encodeURIComponent(workflowName)}` : '';
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/terminal${qs}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -71,7 +72,7 @@ export default function TerminalPanel({ visible }) {
       try { ws.close(); } catch {}
       try { term.dispose(); } catch {}
     };
-  }, []);
+  }, [workflowName]);
 
   useEffect(() => {
     if (visible && fitRef.current) {

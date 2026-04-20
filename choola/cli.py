@@ -22,6 +22,7 @@ Commands:
     choola list              List all workflows in the current project
     choola run <name>        Execute a workflow headlessly
     choola replay <wf> <run> <node>  Re-run one node with saved evaluation input
+    choola explain <name>    Print each node's title and description in DAG order
     choola nodes [name]      List available node types
 """
 
@@ -485,6 +486,28 @@ def run(workflow_name: str, field_values: tuple[str, ...], payload: str):
         asyncio.run(execute_workflow(workflow_name, data))
     except Exception:
         raise SystemExit(1)
+
+
+@main.command()
+@click.argument("workflow_name")
+def explain(workflow_name: str):
+    """Print each node's title and description in DAG (topological) order."""
+    try:
+        registry = load_workflow_classes(workflow_name)
+        wf = build_workflow(registry)
+        sorted_ids = topological_sort(wf["nodes"], wf["edges"])
+    except (FileNotFoundError, ValueError) as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(1)
+
+    node_lookup = {n["id"]: n for n in wf["nodes"]}
+    click.secho(f"Workflow: {workflow_name}", bold=True)
+    for node_id in sorted_ids:
+        cls = node_lookup[node_id]["cls"]
+        click.echo()
+        click.secho(f"  {cls.name}  ", fg="cyan", nl=False)
+        click.secho(f"({node_id})", fg="white")
+        click.echo(f"    {cls.description}")
 
 
 @main.command()

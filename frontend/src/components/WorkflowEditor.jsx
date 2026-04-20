@@ -1118,7 +1118,7 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
                   }}
                 />
                 <div style={{ height: terminalHeight, flexShrink: 0, minHeight: 0 }}>
-                  <TerminalPanel visible={terminalOpen} />
+                  <TerminalPanel visible={terminalOpen} workflowName={workflowName} />
                 </div>
               </>
             )}

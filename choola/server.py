@@ -1606,12 +1606,26 @@ def terminal_socket(ws):
     import struct
     import termios
 
+    # Optionally launch in a specific workflow's folder so `claude` picks up
+    # the root .claude/ by walking up the tree. Validate the name stays inside
+    # WORKFLOWS_DIR to prevent path traversal.
+    start_dir = CWD
+    workflow_name = (request.args.get("workflow") or "").strip()
+    if workflow_name:
+        candidate = (WORKFLOWS_DIR / workflow_name).resolve()
+        try:
+            candidate.relative_to(WORKFLOWS_DIR.resolve())
+            if candidate.is_dir():
+                start_dir = candidate
+        except ValueError:
+            pass
+
     shell = os.environ.get("SHELL", "/bin/bash")
     pid, fd = pty.fork()
     if pid == 0:
-        # child: exec the shell in the user's project cwd
+        # child: exec the shell in the resolved cwd
         try:
-            os.chdir(str(CWD))
+            os.chdir(str(start_dir))
         except Exception:
             pass
         env = os.environ.copy()

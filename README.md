@@ -56,8 +56,8 @@ Each workflow also gets its own isolated SQLite database, vector store, and run 
 |---|---|
 | ![Per-workflow SQLite database](docs/images/database.png) | ![Per-workflow vector database](docs/images/vectordb.png) |
 | **Database** — schema + query browser for the workflow's own SQLite | **VectorDB** — ChromaDB collections, schema, and similarity search |
-| ![Run evaluations with per-node input/output](docs/images/evaluations.png) | |
-| **Evaluations** — every run's per-node input, output, timing, and tokens | |
+| ![Run evaluations with per-node input/output](docs/images/evaluations.png) | ![Claude Code running inside the Choola editor](docs/images/claude.png) |
+| **Evaluations** — every run's per-node input, output, timing, and tokens | **Claude Code** — built-in terminal for agent-driven node editing |
 
 ### Build a workflow with Claude Code
 
