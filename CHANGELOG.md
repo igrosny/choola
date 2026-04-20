@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-19
+
+### Added
+- Add terminal functionality to the workflow editor via a new `TerminalPanel` component with WebSocket support, scoped to the active workflow
+- Add `explain` CLI command for explaining workflow context
+- Add Claude Code template (`_claude/`) copied to end-user projects on `choola init`, including pre-approved settings and `/node`, `/workflow`, `/debug`, `/replay` slash commands
+
+### Infrastructure
+- Add `llms.txt` for unified AI agent instructions and enhance documentation
+
 ## [0.6.0] - 2026-04-18
 
 ### Added

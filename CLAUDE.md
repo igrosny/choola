@@ -85,7 +85,7 @@ End users running `choola init` get `/choola/_claude/` rendered as `.claude/` at
 ## Committing Frontend Changes
 
 ```bash
-cd frontend && npm run build && cp -r dist ../choola/static/dist
+cd frontend && npm run build && rm -rf ../choola/static/dist && cp -r dist ../choola/static/dist
 ```
 
 Commit both `frontend/src/` and `choola/static/dist/`.
@@ -94,7 +94,7 @@ Commit both `frontend/src/` and `choola/static/dist/`.
 
 ```bash
 # 1. Rebuild the UI
-cd frontend && npm run build && cp -r dist ../choola/static/dist && cd ..
+cd frontend && npm run build && rm -rf ../choola/static/dist && cp -r dist ../choola/static/dist && cd ..
 
 # 2. Bump version in both places:
 #    choola/__init__.py  ->  __version__ = "0.x.y"
