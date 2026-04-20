@@ -2,6 +2,8 @@
 
 This file defines the rules for building workflows with Choola. It is the single source of truth for any agent or developer creating or editing workflows.
 
+**Working-directory context.** When Claude Code is launched from inside a `workflows/<name>/` directory, any unqualified reference to "the workflow" in the user's prompt (create, update, add a node, rename, etc.) refers to the workflow rooted at the current working directory. Do not ask which workflow is meant unless the prompt explicitly names a different one.
+
 ## Workflow Structure
 
 ```

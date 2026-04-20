@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-20
+
+### Added
+- Add MCP server with JSON-RPC endpoint that exposes workflows as tools, including authentication support
+- Add `dream` CLI command for training XGBoost classifiers and implement LLML node logic
+
 ## [0.7.0] - 2026-04-19
 
 ### Added
