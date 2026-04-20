@@ -112,6 +112,31 @@ The abstract base class for ALL nodes. Provides:
 
 **Output payload:** adds `llm_response`, `llm_model`, `llm_provider` to existing payload
 
+## LLML (`choola.core.nodes.llml.LLML`)
+
+**Category:** processing
+**Purpose:** LLM with a 3-layer fallthrough (exact-match cache → local XGBoost classifier → real LLM). For yes/no and small-label classification tasks where identical inputs should never pay twice and enough examples eventually retire the LLM entirely.
+
+**Requires:** A stored credential (inherited from LLM). A trained XGBoost model appears only after `choola dream` runs on collected examples.
+
+**Fields:** (inherits all LLM fields — `credential_name`, `provider`, `model`, `prompt`, `system_prompt`, `max_tokens`, `temperature`) plus:
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `parameter_keys` | json | no | `[]` | JSON list of payload keys whose values form the cache key and XGBoost feature input |
+| `confidence_threshold` | number | no | `0.85` | Min XGBoost top-class probability (0.0–1.0) required to skip the LLM |
+
+**Output payload:** adds `llm_response`, `llm_model`, `llm_provider`, `llml_source` (`"llm"` or `"xgboost"`), `llml_confidence` (float or null), `llml_cached` (bool).
+
+**Side effects:** auto-creates `llml_<node_id>` SQLite table on first run in the workflow's `files/db.sqlite`; upserts into ChromaDB collection `llml_<node_id>` in the workflow's `files/chroma/` only when the real LLM is called (keeps training data free of self-predictions).
+
+**Training via `choola dream`:** walks every workflow, finds LLML-subclass nodes, and — for each — trains `files/llml/<node_id>/model.bin` (+ `labels.json`, `meta.json`) from rows where `source='llm'`. XGBoost-inferred rows are intentionally excluded so the model never learns from its own predictions.
+
+**Notes:**
+- `node_id` must match `^[a-z0-9_]+$` because it's interpolated into the table name.
+- The LLM is still called whenever the cache misses AND either no model exists yet OR its top-class probability is below `confidence_threshold` — so the node stays correct even with zero training and degrades gracefully if a trained model is deleted.
+- Raise `confidence_threshold` toward 1.0 to use XGBoost only when very sure; lower it to shift more traffic to the local model.
+
 ## HTTP (`choola.core.nodes.http.HTTP`)
 
 **Category:** processing

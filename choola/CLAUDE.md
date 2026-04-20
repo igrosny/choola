@@ -385,4 +385,5 @@ choola list                              # List all workflows
 choola run <workflow_name> --payload '{}' # Run headlessly
 choola replay <workflow> <run_id> <node_id>  # Re-run one node with saved input
 choola nodes                             # List core node types
+choola dream                             # Train XGBoost classifiers for LLML nodes
 ```

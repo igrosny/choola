@@ -24,6 +24,7 @@ Commands:
     choola replay <wf> <run> <node>  Re-run one node with saved evaluation input
     choola explain <name>    Print each node's title and description in DAG order
     choola nodes [name]      List available node types
+    choola dream             Train XGBoost classifiers for every LLML node
 """
 
 from __future__ import annotations
@@ -622,6 +623,111 @@ def credential(name: str):
 
     upsert_credential(name, provider, value)
     click.secho(f"Credential '{name}' saved (provider: {provider}).", fg="green")
+
+
+@main.command()
+@click.option("--workflow", "workflow_filter", default=None,
+              help="Only train nodes in this workflow (default: all workflows).")
+@click.option("--min-examples", default=10, type=int,
+              help="Skip nodes with fewer 'source=llm' rows.")
+def dream(workflow_filter: str | None, min_examples: int):
+    """Train XGBoost classifiers for every LLML node in every workflow.
+
+    Walks workflows/, finds nodes that subclass the LLML core node, reads
+    their SQLite history (rows where source='llm' only — never xgboost
+    predictions), pulls their embeddings from the workflow's ChromaDB, and
+    writes a per-node model to workflows/<wf>/files/llml/<node_id>/.
+    """
+    from choola._dream import discover_llml_nodes, train_llml_node
+
+    init_db()
+    workflows_dir = _cwd_workflows()
+    if not workflows_dir.exists():
+        click.secho("No workflows/ directory found.", fg="red")
+        raise SystemExit(1)
+
+    if workflow_filter:
+        targets = [workflow_filter]
+    else:
+        targets = sorted(
+            d.name for d in workflows_dir.iterdir()
+            if d.is_dir() and (d / "nodes").exists()
+        )
+    if not targets:
+        click.echo("No workflows found.")
+        return
+
+    click.echo(f"[choola dream] Scanning {len(targets)} workflow(s) for LLML nodes...\n")
+    total_trained = 0
+    total_skipped = 0
+
+    for wf in targets:
+        try:
+            node_classes = discover_llml_nodes(wf)
+        except FileNotFoundError as exc:
+            click.secho(f"  {wf}: {exc}", fg="yellow")
+            continue
+        except Exception as exc:
+            click.secho(f"  {wf}: failed to load nodes — {exc}", fg="yellow")
+            continue
+
+        if not node_classes:
+            continue
+
+        click.secho(wf, bold=True)
+        for cls in node_classes:
+            node_id = cls.node_id
+            if not node_id:
+                click.secho(
+                    f"  {cls.__name__}: skipped (no node_id)", fg="yellow"
+                )
+                total_skipped += 1
+                continue
+            try:
+                result = train_llml_node(wf, node_id, min_examples=min_examples)
+            except Exception as exc:
+                click.secho(f"  {node_id}: ERROR — {exc}", fg="red")
+                total_skipped += 1
+                continue
+
+            status = result.get("status")
+            if status == "trained":
+                click.secho(
+                    f"  {node_id}: trained on {result['n_examples']} examples, "
+                    f"{result['n_classes']} classes, "
+                    f"train_acc={result['train_accuracy']:.3f}",
+                    fg="green",
+                )
+                total_trained += 1
+            elif status == "skipped_too_few":
+                click.echo(
+                    f"  {node_id}: skipped — only {result['n_examples']} "
+                    f"LLM-sourced rows (min {min_examples})"
+                )
+                total_skipped += 1
+            elif status == "skipped_single_class":
+                click.echo(
+                    f"  {node_id}: skipped — only {result['n_classes']} "
+                    "distinct label so far"
+                )
+                total_skipped += 1
+            elif status == "skipped_no_embeddings":
+                click.echo(
+                    f"  {node_id}: skipped — embeddings missing for all rows"
+                )
+                total_skipped += 1
+            elif status == "skipped_no_table":
+                click.echo(f"  {node_id}: skipped — no history table yet")
+                total_skipped += 1
+            else:
+                click.echo(f"  {node_id}: {status}")
+                total_skipped += 1
+        click.echo()
+
+    click.secho(
+        f"[choola dream] done — trained {total_trained}, skipped {total_skipped}",
+        fg="cyan",
+    )
 
 
 @main.command()
