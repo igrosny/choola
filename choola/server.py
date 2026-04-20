@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hmac
 import importlib
 import importlib.util
 import json
@@ -56,6 +57,7 @@ from choola.database import (
     delete_credential,
     get_credential_async,
     get_global_async,
+    get_global_sync,
     init_db,
     insert_run_log,
     list_credentials,
@@ -874,6 +876,73 @@ def api_run_workflow(name: str):
         return jsonify(result)
     except Exception as exc:
         return jsonify({"status": "ERROR", "error": str(exc), "run_id": run_id}), 500
+
+
+# ------------------------------------------------------------------
+# MCP endpoint — one JSON-RPC surface that exposes every workflow as a tool
+# ------------------------------------------------------------------
+@app.route("/mcp", methods=["POST"])
+def api_mcp():
+    """JSON-RPC 2.0 endpoint implementing the minimum MCP methods."""
+    from choola import mcp as mcp_module
+
+    # Bearer-token auth: opt-in via the `mcp_token` global. Empty/unset = open.
+    expected = get_global_sync("mcp_token") or ""
+    if expected:
+        header = request.headers.get("Authorization", "")
+        prefix = "Bearer "
+        supplied = header[len(prefix):] if header.startswith(prefix) else ""
+        if not supplied or not hmac.compare_digest(str(expected), supplied):
+            return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        body = request.get_json(force=True, silent=False)
+    except Exception:
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": mcp_module.PARSE_ERROR, "message": "Invalid JSON"},
+        }), 400
+
+    if not isinstance(body, dict):
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": mcp_module.INVALID_REQUEST, "message": "Expected a JSON object"},
+        }), 400
+
+    req_id = body.get("id")
+    method = body.get("method")
+    params = body.get("params") or {}
+
+    if not isinstance(method, str) or not method:
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": mcp_module.INVALID_REQUEST, "message": "Missing 'method'"},
+        }), 400
+
+    try:
+        result, error = mcp_module.dispatch(method, params if isinstance(params, dict) else {})
+    except Exception as exc:
+        tb = traceback.format_exc()
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": mcp_module.INTERNAL_ERROR,
+                "message": str(exc),
+                "data": {"traceback": tb},
+            },
+        }), 200
+
+    # Notifications carry no id → no response body expected.
+    if req_id is None and result is None and error is None:
+        return ("", 204)
+
+    if error is not None:
+        return jsonify({"jsonrpc": "2.0", "id": req_id, "error": error}), 200
+    return jsonify({"jsonrpc": "2.0", "id": req_id, "result": result}), 200
 
 
 @app.route("/api/workflows/<name>/stream/<run_id>")
@@ -1735,4 +1804,9 @@ def create_app() -> Flask:
         print(f"[choola] Registered {len(_form_routes)} form(s):")
         for path, (wf, _cfg) in _form_routes.items():
             print(f"  - GET+POST /webhook{path} -> {wf}")
+
+    mcp_auth = "enabled" if (get_global_sync("mcp_token") or "") else (
+        "disabled — set `mcp_token` global to require a bearer token"
+    )
+    print(f"[choola] MCP: POST /mcp (auth: {mcp_auth})")
     return app

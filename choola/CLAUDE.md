@@ -387,3 +387,27 @@ choola replay <workflow> <run_id> <node_id>  # Re-run one node with saved input
 choola nodes                             # List core node types
 choola dream                             # Train XGBoost classifiers for LLML nodes
 ```
+
+## MCP — every workflow as an AI tool
+
+While `choola start` is running, an MCP (Model Context Protocol) server is exposed at `POST /mcp`. Every workflow on disk becomes one tool; the tool's input schema is derived from the trigger:
+
+- **FormTrigger**: one JSON property per configured `form_fields` entry (`text`/`email`/`textarea`/`date`/`password` → string, `number` → number, `checkbox` → boolean, `dropdown` → string + `enum`). `required: true` fields become required.
+- **WebhookTrigger**: `{body, method?, headers?, query?}`.
+- **ManualTrigger**: `{payload?}` — arbitrary pass-through.
+
+Tool name format: `run__<workflow_name>` (hyphens become underscores, e.g. `bank-statement` → `run__bank_statement`).
+
+Point any MCP-capable client at the endpoint:
+
+```json
+{"mcpServers": {"choola": {"type": "http", "url": "http://localhost:5000/mcp"}}}
+```
+
+**Auth.** The endpoint is open by default (localhost-only in dev). To require a bearer token, set the `mcp_token` global. The simplest path is a one-liner from the project root:
+
+```bash
+python -c "from choola.database import set_global_sync; set_global_sync('mcp_token', '<random hex>')"
+```
+
+Clients then send `Authorization: Bearer <random hex>`. Set the value back to the empty string to turn auth off again. The startup banner reports the current state (`auth: enabled` / `auth: disabled`).
