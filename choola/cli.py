@@ -353,6 +353,18 @@ def init(target: str):
     else:
         click.secho("  Warning: bundled llms.txt not found — skipping", fg="yellow")
 
+    # Copy bundled _claude/ template into the project as .claude/
+    bundled_claude = _PKG_ROOT / "_claude"
+    dest_claude = project_dir / ".claude"
+    if bundled_claude.exists():
+        if dest_claude.exists():
+            click.secho(f"  Skipped  .claude/ (already exists)", fg="yellow")
+        else:
+            shutil.copytree(bundled_claude, dest_claude)
+            click.secho(f"  Created  .claude/", fg="green")
+    else:
+        click.secho("  Warning: bundled _claude/ template not found — skipping", fg="yellow")
+
     click.echo(f"\n[choola] Project initialized at {project_dir}")
     click.echo("  Run `choola start` to launch the server.")
     click.echo("  Run `choola create <workflow-name>` to create your first workflow.")

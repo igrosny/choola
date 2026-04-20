@@ -1,3 +1,5 @@
 recursive-include choola/static *
+recursive-include choola/_claude *
+include choola/_claude/.gitignore
 include choola/CLAUDE.md
 include README.md

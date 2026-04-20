@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(choola list)",
+      "Bash(choola list:*)",
+      "Bash(choola nodes)",
+      "Bash(choola nodes:*)",
+      "Bash(choola replay:*)",
+      "Bash(python -c *)",
+      "Bash(python3 -c *)",
+      "Bash(ls:*)",
+      "Bash(cat workflows/*)",
+      "Bash(head workflows/*)",
+      "Bash(tail workflows/*)"
+    ]
+  }
+}

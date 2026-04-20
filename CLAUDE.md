@@ -21,6 +21,9 @@ choola/                 <- THE pip package
   database.py           <- SQLite (choola.db in user's cwd)
   evaluations.py        <- Evaluation storage (one JSON per run)
   CLAUDE.md             <- Workflow authoring guide (copied on `choola init`)
+  _claude/              <- Claude Code template; copied to `.claude/` on `choola init`
+    settings.json       <- End-user Claude Code permissions
+    commands/           <- /node, /workflow, /debug, /replay slash commands
   core/
     base_node.py        <- BaseNode — every node inherits from this
     CLAUDE.md           <- Core node reference
@@ -61,6 +64,15 @@ Open `http://localhost:5173`. Vite proxies API calls to Flask at 5000.
 | `/CLAUDE.md` (this file) | Dev environment guide for agents working on the engine | When you change the package structure, dev workflow, or release process |
 | `/choola/CLAUDE.md` | Workflow authoring guide — copied to user projects on `choola init` | When you change the node contract, add core nodes, or change workflow rules |
 | `/choola/core/CLAUDE.md` | Core node reference — documents every core node's API | When you add, remove, or change a core node's fields/behavior |
+
+## The Two `.claude/` Directories
+
+| Path | Scope | Notes |
+|---|---|---|
+| `/.claude/` (repo root) | Framework-dev only — the setup you (the engine developer) use | Not shipped to end users. Edit freely. |
+| `/choola/_claude/` | Template copied to end-user projects as `.claude/` on `choola init` | Leading underscore keeps Claude Code from loading it here. When you edit this, bump the version and re-release so end users get the update. |
+
+End users running `choola init` get `/choola/_claude/` rendered as `.claude/` at their project root — pre-approved permissions, and `/node`, `/workflow`, `/debug`, `/replay` slash commands. The init step skips the copy if the destination already exists, so end-user customizations are preserved.
 
 ## Adding or Changing a Core Node
 

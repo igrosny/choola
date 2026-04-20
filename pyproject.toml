@@ -33,6 +33,8 @@ include = ["choola*"]
 [tool.setuptools.package-data]
 choola = [
     "static/**/*",
+    "_claude/**/*",
+    "_claude/.gitignore",
     "CLAUDE.md",
     "llms.txt",
 ]
