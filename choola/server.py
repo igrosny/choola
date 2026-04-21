@@ -55,6 +55,7 @@ from choola.evaluations import (
 from choola.database import (
     DB_PATH,
     delete_credential,
+    get_credential,
     get_credential_async,
     get_global_async,
     get_global_sync,
@@ -1002,14 +1003,47 @@ _oauth2_pending: dict[str, dict] = {}
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_OAUTH_SCOPES = {
-    "google_oauth2": "https://www.googleapis.com/auth/drive.file",
-    "gmail": "https://www.googleapis.com/auth/gmail.send",
+
+# Catalog of Google API scopes the UI offers. Key is the short id used in the
+# frontend checklist; value is (full scope URL, human label).
+GOOGLE_SCOPE_CATALOG: dict[str, tuple[str, str]] = {
+    "gmail.send":       ("https://www.googleapis.com/auth/gmail.send",       "Gmail — send"),
+    "gmail.readonly":   ("https://www.googleapis.com/auth/gmail.readonly",   "Gmail — read"),
+    "gmail.modify":     ("https://www.googleapis.com/auth/gmail.modify",     "Gmail — modify"),
+    "drive.file":       ("https://www.googleapis.com/auth/drive.file",       "Drive — files created by this app"),
+    "drive.readonly":   ("https://www.googleapis.com/auth/drive.readonly",   "Drive — read all"),
+    "drive":            ("https://www.googleapis.com/auth/drive",            "Drive — full access"),
+    "sheets":           ("https://www.googleapis.com/auth/spreadsheets",     "Sheets — read/write"),
+    "sheets.readonly":  ("https://www.googleapis.com/auth/spreadsheets.readonly", "Sheets — read"),
+    "calendar":         ("https://www.googleapis.com/auth/calendar",         "Calendar — read/write"),
+    "calendar.events":  ("https://www.googleapis.com/auth/calendar.events",  "Calendar — events"),
+    "calendar.readonly":("https://www.googleapis.com/auth/calendar.readonly","Calendar — read"),
+    "contacts.readonly":("https://www.googleapis.com/auth/contacts.readonly","Contacts — read"),
+    "docs":             ("https://www.googleapis.com/auth/documents",        "Docs — read/write"),
+    "docs.readonly":    ("https://www.googleapis.com/auth/documents.readonly","Docs — read"),
+    "userinfo.email":   ("https://www.googleapis.com/auth/userinfo.email",   "Profile — email"),
+    "userinfo.profile": ("https://www.googleapis.com/auth/userinfo.profile", "Profile — basic info"),
 }
-GOOGLE_OAUTH_LABELS = {
-    "google_oauth2": "Google",
-    "gmail": "Gmail",
-}
+
+
+def _resolve_scope_ids(scope_ids: list[str]) -> list[str]:
+    """Map short ids to full scope URLs; raise ValueError on unknown id."""
+    urls: list[str] = []
+    for sid in scope_ids:
+        entry = GOOGLE_SCOPE_CATALOG.get(sid)
+        if not entry:
+            raise ValueError(f"Unknown Google scope id: {sid}")
+        urls.append(entry[0])
+    return urls
+
+
+@app.route("/api/oauth2/google/scopes")
+def api_oauth2_google_scopes():
+    """Return the scope catalog so the UI can render checkboxes."""
+    return jsonify([
+        {"id": sid, "url": url, "label": label}
+        for sid, (url, label) in GOOGLE_SCOPE_CATALOG.items()
+    ])
 
 
 @app.route("/api/oauth2/google/start", methods=["POST"])
@@ -1018,21 +1052,42 @@ def api_oauth2_google_start():
     name = data.get("name", "").strip()
     client_id = data.get("client_id", "").strip()
     client_secret = data.get("client_secret", "").strip()
-    provider = data.get("provider", "google_oauth2").strip()
+    scope_ids = data.get("scopes") or []
 
-    if not name or not client_id or not client_secret:
-        return jsonify({"error": "name, client_id, and client_secret are required"}), 400
+    if not name:
+        return jsonify({"error": "name is required"}), 400
     if not all(c.isalnum() or c in ("_", "-") for c in name):
         return jsonify({"error": "name must be alphanumeric (underscores/hyphens allowed)"}), 400
-    if provider not in GOOGLE_OAUTH_SCOPES:
-        return jsonify({"error": f"Unsupported provider: {provider}"}), 400
+    if not isinstance(scope_ids, list) or not scope_ids:
+        return jsonify({"error": "scopes must be a non-empty list"}), 400
+
+    # If a credential with this name already exists, let the user extend its
+    # scopes without re-entering client_id / client_secret.
+    existing = get_credential(name)
+    if existing and existing.get("provider") == "google":
+        try:
+            existing_tokens = json.loads(existing["value"])
+        except json.JSONDecodeError:
+            existing_tokens = {}
+        client_id = client_id or existing_tokens.get("client_id", "")
+        client_secret = client_secret or existing_tokens.get("client_secret", "")
+        prior_scope_ids = existing_tokens.get("scopes") or []
+        scope_ids = sorted(set(prior_scope_ids) | set(scope_ids))
+
+    if not client_id or not client_secret:
+        return jsonify({"error": "client_id and client_secret are required"}), 400
+
+    try:
+        scope_urls = _resolve_scope_ids(scope_ids)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     state = uuid.uuid4().hex
     _oauth2_pending[state] = {
         "name": name,
         "client_id": client_id,
         "client_secret": client_secret,
-        "provider": provider,
+        "scope_ids": scope_ids,
     }
 
     callback_url = request.host_url.rstrip("/") + "/api/oauth2/google/callback"
@@ -1040,9 +1095,10 @@ def api_oauth2_google_start():
         "client_id": client_id,
         "redirect_uri": callback_url,
         "response_type": "code",
-        "scope": GOOGLE_OAUTH_SCOPES[provider],
+        "scope": " ".join(scope_urls),
         "access_type": "offline",
         "prompt": "consent",
+        "include_granted_scopes": "true",
         "state": state,
     }
     from urllib.parse import urlencode
@@ -1078,23 +1134,31 @@ def api_oauth2_google_callback():
         return f"<h2>Token exchange failed</h2><pre>{token_resp.text}</pre>", 400
 
     tokens = token_resp.json()
+
+    # Google returns the granted scope list as a space-separated string; store
+    # it verbatim so nodes can check against the full URL catalog.
+    granted_scope_urls = (tokens.get("scope") or "").split()
+    # Map granted URLs back to short ids when possible for display.
+    url_to_id = {url: sid for sid, (url, _label) in GOOGLE_SCOPE_CATALOG.items()}
+    granted_scope_ids = [url_to_id[u] for u in granted_scope_urls if u in url_to_id]
+
     credential_value = json.dumps({
         "client_id": pending["client_id"],
         "client_secret": pending["client_secret"],
         "access_token": tokens.get("access_token"),
         "refresh_token": tokens.get("refresh_token"),
         "token_uri": GOOGLE_TOKEN_URL,
+        "scopes": granted_scope_ids or pending["scope_ids"],
+        "scope_urls": granted_scope_urls,
     })
 
-    provider = pending.get("provider", "google_oauth2")
-    label = GOOGLE_OAUTH_LABELS.get(provider, "Google")
-    upsert_credential(pending["name"], provider, credential_value)
+    upsert_credential(pending["name"], "google", credential_value)
 
     return f"""
     <html><body style="background:#1a1a2e;color:#eee;font-family:sans-serif;display:flex;
     align-items:center;justify-content:center;height:100vh;margin:0">
     <div style="text-align:center">
-      <h2 style="color:#4ade80">Connected to {label}</h2>
+      <h2 style="color:#4ade80">Connected to Google</h2>
       <p>Credential saved. You can close this tab.</p>
       <script>if(window.opener){{window.opener.postMessage('oauth2_done','*')}}</script>
     </div></body></html>

@@ -228,12 +228,12 @@ result = await self.vector_query(
 **Category:** output
 **Purpose:** Sends an email via the Gmail API using OAuth2 credentials.
 
-**Requires:** A stored credential (`await self.get_credential(name)`) with provider `gmail` — set up via the OAuth2 flow in Settings > Credentials.
+**Requires:** A stored credential (`await self.get_credential(name)`) with provider `google` whose granted scopes include `gmail.send`.
 
 **Fields:**
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `credential_name` | string | yes | — | Name of the stored Gmail OAuth2 credential |
+| `credential_name` | string | yes | — | Name of the stored Google OAuth2 credential (must include scope `gmail.send`) |
 | `to_email` | string | yes | — | Recipient email address |
 | `subject` | string | yes | — | Subject template; `{key}` interpolates payload values |
 | `body` | textarea | yes | — | Body template; `{key}` interpolates payload values |
@@ -241,7 +241,7 @@ result = await self.vector_query(
 
 **Output payload:** adds `email_sent` (bool), `email_to` (str), `email_subject` (str) to existing payload
 
-**Setup:** In Settings > Credentials, select the "Gmail" provider, enter your Google Cloud OAuth2 Client ID and Client Secret (with Gmail API enabled and `gmail.send` scope), then click "Connect with Gmail" to authorize. The sender address is the authenticated Google account.
+**Setup:** In Settings > Credentials, select the "Google (OAuth2)" provider, enter your Google Cloud OAuth2 Client ID and Client Secret (with Gmail API enabled), tick the `gmail.send` scope, then click "Connect with Google". If the credential already exists you can re-authorize with additional scopes checked — the flow extends the same credential rather than creating a new one. The sender address is the authenticated Google account.
 
 ## Branching & Merging (Engine Features)
 

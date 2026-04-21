@@ -193,12 +193,13 @@ Credentials are stored encrypted in the SQLite `credentials` table created in th
 | POST | `/api/credentials` | Create or update: `{ name, provider, value }` |
 | DELETE | `/api/credentials/<name>` | Delete a credential |
 
-For OAuth2 providers (Gmail, Google), use the dedicated flow:
+For the Google OAuth2 provider use the dedicated flow — a single `google` credential can grant any combination of scopes (Gmail, Drive, Sheets, Calendar, …) and can be re-authorized later to extend its scopes:
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/oauth2/gmail/start` | Initiate the OAuth2 flow — returns a redirect URL |
-| GET | `/api/oauth2/gmail/callback` | Callback that exchanges the code for tokens and stores them |
+| GET | `/api/oauth2/google/scopes` | List the scope catalog used by the UI checklist |
+| POST | `/api/oauth2/google/start` | Initiate the OAuth2 flow — body: `{ name, client_id, client_secret, scopes: [<scope_id>, …] }`. When a credential with the same name already exists, `client_id`/`client_secret` are optional (reuses stored values) and the new scopes are merged with the existing ones. |
+| GET | `/api/oauth2/google/callback` | Callback that exchanges the code for tokens, records the granted scope list, and stores the credential |
 
 The `choola credential <name>` CLI command provides an interactive prompt for both static keys and OAuth2 flows, so contributors don't have to hit the HTTP API by hand during development.
 
@@ -252,8 +253,9 @@ The full set of endpoints exposed by `choola/server.py`:
 | GET | `/api/credentials` | List all (values masked) |
 | POST | `/api/credentials` | Create or update a credential |
 | DELETE | `/api/credentials/<name>` | Delete a credential |
-| POST | `/api/oauth2/gmail/start` | Begin the Gmail OAuth2 flow |
-| GET | `/api/oauth2/gmail/callback` | OAuth2 callback handler |
+| GET | `/api/oauth2/google/scopes` | Return the Google scope catalog for the UI checklist |
+| POST | `/api/oauth2/google/start` | Begin the Google OAuth2 flow (body takes `scopes: [...]`; extends the credential if it already exists) |
+| GET | `/api/oauth2/google/callback` | OAuth2 callback handler — records the granted scope list on the credential |
 
 ### MCP
 

@@ -15,7 +15,7 @@
 """
 @choola-node: Gmail
 @category: output
-@description: Sends an email via the Gmail API using OAuth2 credentials. Requires a stored Gmail credential.
+@description: Sends an email via the Gmail API using a Google OAuth2 credential that includes the gmail.send scope.
 @input-payload:
   - (any prior payload keys are preserved)
 @output-payload:
@@ -24,7 +24,7 @@
   - email_subject (str): Subject line that was sent
   - (all prior payload keys are preserved)
 @config-fields:
-  - credential_name (str, required): Name of the stored Gmail OAuth2 credential
+  - credential_name (str, required): Name of the stored Google OAuth2 credential (must include scope `gmail.send`)
   - to_email (str, required): Recipient email address
   - subject (str, required): Email subject — use {key} to interpolate payload values
   - body (textarea, required): Email body — use {key} to interpolate payload values
@@ -32,7 +32,7 @@
 @example-input: {"files": ["a.txt", "b.txt"], "file_count": 2}
 @example-output: {"email_sent": true, "email_to": "user@example.com", "email_subject": "Files Report", "files": ["a.txt", "b.txt"], "file_count": 2}
 @side-effects: Sends an email via the Gmail API
-@errors: Missing credential, OAuth2 token refresh failure, Gmail API errors
+@errors: Missing credential, credential missing gmail.send scope, OAuth2 token refresh failure, Gmail API errors
 """
 
 import base64
@@ -53,8 +53,8 @@ class Gmail(BaseNode):
             "name": "credential_name",
             "type": "string",
             "required": True,
-            "placeholder": "gmail",
-            "description": "Name of the stored Gmail credential (set up via Settings > Credentials with Gmail provider)",
+            "placeholder": "google",
+            "description": "Name of the stored Google OAuth2 credential — must include the gmail.send scope (Settings > Credentials > Google)",
         },
         {
             "name": "to_email",
@@ -94,10 +94,22 @@ class Gmail(BaseNode):
         if cred is None:
             raise ValueError(
                 f"Credential '{credential_name}' not found. "
-                "Add it via Settings > Credentials with the Gmail provider."
+                "Add it via Settings > Credentials with the Google provider (select the gmail.send scope)."
+            )
+        if cred.get("provider") != "google":
+            raise ValueError(
+                f"Credential '{credential_name}' has provider '{cred.get('provider')}', "
+                "but Gmail requires a 'google' OAuth2 credential."
             )
 
         tokens = json.loads(cred["value"])
+        granted_scopes = tokens.get("scopes") or []
+        if "gmail.send" not in granted_scopes:
+            raise ValueError(
+                f"Credential '{credential_name}' is missing the 'gmail.send' scope. "
+                "Re-authorize it via Settings > Credentials and select the gmail.send scope."
+            )
+
         to_email = self.config.get("to_email", "")
 
         if not to_email:

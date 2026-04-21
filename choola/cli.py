@@ -547,12 +547,29 @@ def nodes(workflow_name: str | None):
 CREDENTIAL_PROVIDERS = [
     ("claude", "Claude"),
     ("openai", "OpenAI"),
-    ("google", "Google"),
-    ("google_oauth2", "Google OAuth2"),
-    ("gmail", "Gmail"),
+    ("gemini", "Gemini"),
+    ("google", "Google (OAuth2)"),
 ]
 
-_OAUTH2_PROVIDERS = {"google_oauth2", "gmail"}
+# Kept in sync with choola.server.GOOGLE_SCOPE_CATALOG.
+GOOGLE_SCOPE_CATALOG = {
+    "gmail.send":        "https://www.googleapis.com/auth/gmail.send",
+    "gmail.readonly":    "https://www.googleapis.com/auth/gmail.readonly",
+    "gmail.modify":      "https://www.googleapis.com/auth/gmail.modify",
+    "drive.file":        "https://www.googleapis.com/auth/drive.file",
+    "drive.readonly":    "https://www.googleapis.com/auth/drive.readonly",
+    "drive":             "https://www.googleapis.com/auth/drive",
+    "sheets":            "https://www.googleapis.com/auth/spreadsheets",
+    "sheets.readonly":   "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "calendar":          "https://www.googleapis.com/auth/calendar",
+    "calendar.events":   "https://www.googleapis.com/auth/calendar.events",
+    "calendar.readonly": "https://www.googleapis.com/auth/calendar.readonly",
+    "contacts.readonly": "https://www.googleapis.com/auth/contacts.readonly",
+    "docs":              "https://www.googleapis.com/auth/documents",
+    "docs.readonly":     "https://www.googleapis.com/auth/documents.readonly",
+    "userinfo.email":    "https://www.googleapis.com/auth/userinfo.email",
+    "userinfo.profile":  "https://www.googleapis.com/auth/userinfo.profile",
+}
 
 
 @main.command()
@@ -568,24 +585,70 @@ def credential(name: str):
     choice = click.prompt("Enter number", type=click.IntRange(1, len(CREDENTIAL_PROVIDERS)))
     provider = CREDENTIAL_PROVIDERS[choice - 1][0]
 
-    if provider in _OAUTH2_PROVIDERS:
-        client_id = click.prompt("Client ID (hidden)", hide_input=True)
-        client_secret = click.prompt("Client Secret (hidden)", hide_input=True)
+    if provider == "google":
+        from choola.database import get_credential as _get_credential
+        existing = _get_credential(name)
+        existing_tokens: dict = {}
+        prior_scope_ids: list[str] = []
+        if existing and existing.get("provider") == "google":
+            try:
+                existing_tokens = json.loads(existing["value"])
+                prior_scope_ids = existing_tokens.get("scopes") or []
+            except json.JSONDecodeError:
+                pass
+            click.secho(
+                f"Extending existing Google credential '{name}'. "
+                f"Current scopes: {', '.join(prior_scope_ids) or '(none)'}",
+                fg="yellow",
+            )
+
+        client_id = click.prompt(
+            "Client ID" + (" (leave blank to reuse stored)" if existing_tokens else ""),
+            default=existing_tokens.get("client_id", ""),
+            show_default=False,
+        ).strip()
+        client_secret = click.prompt(
+            "Client Secret (hidden)" + (" — leave blank to reuse stored" if existing_tokens else ""),
+            default=existing_tokens.get("client_secret", ""),
+            hide_input=True,
+            show_default=False,
+        ).strip()
+        if not client_id or not client_secret:
+            click.secho("client_id and client_secret are required.", fg="red")
+            raise SystemExit(1)
+
+        click.echo()
+        click.echo("Available scopes (comma-separated ids):")
+        for sid in GOOGLE_SCOPE_CATALOG:
+            marker = " [current]" if sid in prior_scope_ids else ""
+            click.echo(f"  {sid}{marker}")
+        picked_raw = click.prompt(
+            "Enter scope ids",
+            default=",".join(prior_scope_ids) if prior_scope_ids else "",
+            show_default=bool(prior_scope_ids),
+        )
+        picked = [s.strip() for s in picked_raw.split(",") if s.strip()]
+        unknown = [s for s in picked if s not in GOOGLE_SCOPE_CATALOG]
+        if unknown:
+            click.secho(f"Unknown scope id(s): {', '.join(unknown)}", fg="red")
+            raise SystemExit(1)
+        scope_ids = sorted(set(prior_scope_ids) | set(picked))
+        if not scope_ids:
+            click.secho("At least one scope is required.", fg="red")
+            raise SystemExit(1)
+        scope_urls = [GOOGLE_SCOPE_CATALOG[s] for s in scope_ids]
 
         from urllib.parse import urlencode
 
-        scopes = {
-            "google_oauth2": "https://www.googleapis.com/auth/drive.file",
-            "gmail": "https://www.googleapis.com/auth/gmail.send",
-        }
         redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
         auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": scopes[provider],
+            "scope": " ".join(scope_urls),
             "access_type": "offline",
             "prompt": "consent",
+            "include_granted_scopes": "true",
         })
 
         click.echo()
@@ -611,12 +674,18 @@ def credential(name: str):
             raise SystemExit(1)
 
         tokens = token_resp.json()
+        granted_urls = (tokens.get("scope") or "").split()
+        url_to_id = {url: sid for sid, url in GOOGLE_SCOPE_CATALOG.items()}
+        granted_ids = [url_to_id[u] for u in granted_urls if u in url_to_id]
+
         value = json.dumps({
             "client_id": client_id,
             "client_secret": client_secret,
             "access_token": tokens.get("access_token"),
             "refresh_token": tokens.get("refresh_token"),
             "token_uri": token_url,
+            "scopes": granted_ids or scope_ids,
+            "scope_urls": granted_urls,
         })
     else:
         value = click.prompt("API key (hidden)", hide_input=True)

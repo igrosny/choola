@@ -168,32 +168,57 @@ function CreateWorkflowModal({ onClose, onCreate }) {
 }
 
 // ── CredentialsModal ──────────────────────────────────────
+const emptyCredForm = { name: '', provider: 'claude', value: '', client_id: '', client_secret: '', scopes: [] };
+
 function CredentialsModal({ onClose }) {
   const [credentials, setCredentials] = useState([]);
-  const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
+  const [credForm, setCredForm] = useState(emptyCredForm);
+  const [googleScopes, setGoogleScopes] = useState([]);
 
   const refresh = () =>
     fetch('/api/credentials').then(r => r.json()).then(setCredentials);
 
   useEffect(() => { refresh(); }, []);
 
+  useEffect(() => {
+    fetch('/api/oauth2/google/scopes').then(r => r.json()).then(setGoogleScopes).catch(() => {});
+  }, []);
+
+  const toggleScope = (id) => {
+    setCredForm(p => {
+      const has = p.scopes.includes(id);
+      return { ...p, scopes: has ? p.scopes.filter(s => s !== id) : [...p.scopes, id] };
+    });
+  };
+
   const handleSave = async () => {
-    if (credForm.provider === 'google_oauth2' || credForm.provider === 'gmail') {
-      if (!credForm.name || !credForm.client_id || !credForm.client_secret) {
-        alert('Name, Client ID, and Client Secret are required'); return;
+    if (credForm.provider === 'google') {
+      if (!credForm.name) { alert('Name is required'); return; }
+      if (!credForm.scopes.length) { alert('Select at least one scope'); return; }
+      // For a new credential client_id/secret are required. For an existing
+      // 'google' credential the server will reuse the stored values if these
+      // are blank (re-authorize to extend scopes).
+      const existing = credentials.find(c => c.name === credForm.name && c.provider === 'google');
+      if (!existing && (!credForm.client_id || !credForm.client_secret)) {
+        alert('Client ID and Client Secret are required for a new credential'); return;
       }
       const res = await fetch('/api/oauth2/google/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: credForm.name, client_id: credForm.client_id, client_secret: credForm.client_secret, provider: credForm.provider }),
+        body: JSON.stringify({
+          name: credForm.name,
+          client_id: credForm.client_id,
+          client_secret: credForm.client_secret,
+          scopes: credForm.scopes,
+        }),
       });
       if (!res.ok) { const d = await res.json(); alert(d.error || 'Failed'); return; }
       const { auth_url } = await res.json();
-      const popup = window.open(auth_url, 'google_oauth2', 'width=500,height=600');
+      window.open(auth_url, 'google_oauth2', 'width=500,height=600');
       const onMessage = (e) => {
         if (e.data === 'oauth2_done') {
           window.removeEventListener('message', onMessage);
-          setCredForm({ name: '', provider: 'claude', value: '' });
+          setCredForm(emptyCredForm);
           refresh();
         }
       };
@@ -204,10 +229,10 @@ function CredentialsModal({ onClose }) {
     const res = await fetch('/api/credentials', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(credForm),
+      body: JSON.stringify({ name: credForm.name, provider: credForm.provider, value: credForm.value }),
     });
     if (!res.ok) { const d = await res.json(); alert(d.error || 'Failed'); return; }
-    setCredForm({ name: '', provider: 'claude', value: '' });
+    setCredForm(emptyCredForm);
     refresh();
   };
 
@@ -219,10 +244,12 @@ function CredentialsModal({ onClose }) {
 
   const providerColor = (p) => {
     if (p === 'claude') return { bg: 'rgba(217,119,87,0.1)', color: '#c6613f', border: 'rgba(217,119,87,0.25)' };
-    if (p === 'google' || p === 'google_oauth2') return { bg: 'rgba(44,132,219,0.1)', color: '#1b67b2', border: 'rgba(44,132,219,0.25)' };
-    if (p === 'gmail') return { bg: 'rgba(234,67,53,0.1)', color: '#c5221f', border: 'rgba(234,67,53,0.25)' };
+    if (p === 'google') return { bg: 'rgba(44,132,219,0.1)', color: '#1b67b2', border: 'rgba(44,132,219,0.25)' };
     return { bg: '#f5f4ed', color: '#3d3d3a', border: 'rgba(31,30,29,0.15)' };
   };
+
+  const isExistingGoogle = credForm.provider === 'google' &&
+    credentials.some(c => c.name === credForm.name && c.provider === 'google');
 
   return (
     <div
@@ -303,25 +330,44 @@ function CredentialsModal({ onClose }) {
           >
             <option value="claude">Claude</option>
             <option value="gemini">Gemini</option>
-            <option value="google">Google API Key</option>
-            <option value="google_oauth2">Google OAuth2</option>
-            <option value="gmail">Gmail</option>
+            <option value="google">Google (OAuth2)</option>
           </select>
-          {(credForm.provider === 'google_oauth2' || credForm.provider === 'gmail') ? (
+          {credForm.provider === 'google' ? (
             <>
               <input
-                placeholder="Client ID"
+                placeholder={isExistingGoogle ? 'Client ID (leave blank to reuse stored)' : 'Client ID'}
                 value={credForm.client_id || ''}
                 onChange={e => setCredForm(p => ({ ...p, client_id: e.target.value }))}
                 style={{ ...inputStyle, height: 38, fontSize: 13 }}
               />
               <input
                 type="password"
-                placeholder="Client Secret"
+                placeholder={isExistingGoogle ? 'Client Secret (leave blank to reuse stored)' : 'Client Secret'}
                 value={credForm.client_secret || ''}
                 onChange={e => setCredForm(p => ({ ...p, client_secret: e.target.value }))}
                 style={{ ...inputStyle, height: 38, fontSize: 13 }}
               />
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#73726c', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                Scopes {isExistingGoogle && <span style={{ textTransform: 'none', fontWeight: 400, color: '#9a9892' }}>— re-authorizing will extend the existing credential</span>}
+              </div>
+              <div style={{
+                display: 'flex', flexDirection: 'column', gap: 4,
+                maxHeight: 180, overflowY: 'auto',
+                background: '#ffffff', borderRadius: 8, padding: 8,
+                border: '0.8px solid rgba(31,30,29,0.12)',
+              }}>
+                {googleScopes.map(s => (
+                  <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#3d3d3a', cursor: 'pointer', padding: '3px 4px' }}>
+                    <input
+                      type="checkbox"
+                      checked={credForm.scopes.includes(s.id)}
+                      onChange={() => toggleScope(s.id)}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#73726c', minWidth: 130 }}>{s.id}</span>
+                    <span>{s.label}</span>
+                  </label>
+                ))}
+              </div>
             </>
           ) : (
             <input
@@ -336,7 +382,9 @@ function CredentialsModal({ onClose }) {
             onClick={handleSave}
             style={{ ...btnPrimary, width: '100%', justifyContent: 'center', height: 38 }}
           >
-            {credForm.provider === 'google_oauth2' ? 'Connect with Google' : credForm.provider === 'gmail' ? 'Connect with Gmail' : 'Save credential'}
+            {credForm.provider === 'google'
+              ? (isExistingGoogle ? 'Re-authorize with selected scopes' : 'Connect with Google')
+              : 'Save credential'}
           </button>
         </div>
       </div>
