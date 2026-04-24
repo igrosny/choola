@@ -15,3 +15,4 @@ generated_images/*
 workflows/*
 old*
 build*
+.venv*
