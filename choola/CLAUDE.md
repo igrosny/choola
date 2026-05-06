@@ -91,9 +91,10 @@ workflow is runnable without any UI-side configuration.
 
 Core nodes live in the `choola` package and provide reusable base behavior. **You must never reference a core node directly in `topology.json`.** Instead, create a wrapper class in your workflow's `nodes/` directory that extends the core node.
 
-See `choola/core/CLAUDE.md` for the full reference of available core nodes and their fields.
 
 **Picking a trigger.** Default to FormTrigger for any workflow that takes runtime input. FormTrigger fields double as positional CLI arguments (choola run <workflow> <value1> <value2>) and render a browser form at the configured path. ManualTrigger accepts neither — it only works via the UI "Run" button or an explicit --payload '{...}' — so reserve it for workflows that genuinely take zero input. Use WebhookTrigger when an external system calls in.
+
+**Picking a classifier.** When a node's job is to pick one label from a fixed/small set (yes/no, category from a list, sentiment, intent), default to extending the core LLML node — not a direct LLM call. LLML caches exact inputs in SQLite and, after `choola dream`, serves repeat patterns from a local XGBoost classifier for free. Reach for a plain LLM loop only when the output is open-ended text or the label set is unbounded.
 
 ### Example: Extending a Core Node
 
