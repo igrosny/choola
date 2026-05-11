@@ -25,6 +25,8 @@ Commands:
     choola explain <name>    Print each node's title and description in DAG order
     choola nodes [name]      List available node types
     choola dream             Train XGBoost classifiers for every LLML node
+    choola credential <name> Store a credential interactively
+    choola credentials       List stored credentials (names + providers, no values)
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from choola.database import (
     insert_run_log,
     set_global_async,
     get_credential_async,
+    list_credentials,
     upsert_credential,
     workflow_db_execute_async,
     workflow_db_query_async,
@@ -529,9 +532,11 @@ def nodes(workflow_name: str | None):
         import choola.core.nodes.http as _http
         import choola.core.nodes.db as _db
         import choola.core.nodes.vectordb as _vdb
+        import choola.core.nodes.gmail as _gmail
+        import choola.core.nodes.google_sheets as _gs
         seen = set()
         skip = {BaseNode, Trigger}
-        for mod in (_ft, _wt, _llm, _mt, _http, _db, _vdb):
+        for mod in (_ft, _wt, _llm, _mt, _http, _db, _vdb, _gmail, _gs):
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 if (
@@ -551,27 +556,6 @@ CREDENTIAL_PROVIDERS = [
     ("google", "Google (OAuth2)"),
 ]
 
-# Kept in sync with choola.server.GOOGLE_SCOPE_CATALOG.
-GOOGLE_SCOPE_CATALOG = {
-    "gmail.send":        "https://www.googleapis.com/auth/gmail.send",
-    "gmail.readonly":    "https://www.googleapis.com/auth/gmail.readonly",
-    "gmail.modify":      "https://www.googleapis.com/auth/gmail.modify",
-    "drive.file":        "https://www.googleapis.com/auth/drive.file",
-    "drive.readonly":    "https://www.googleapis.com/auth/drive.readonly",
-    "drive":             "https://www.googleapis.com/auth/drive",
-    "sheets":            "https://www.googleapis.com/auth/spreadsheets",
-    "sheets.readonly":   "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "calendar":          "https://www.googleapis.com/auth/calendar",
-    "calendar.events":   "https://www.googleapis.com/auth/calendar.events",
-    "calendar.readonly": "https://www.googleapis.com/auth/calendar.readonly",
-    "contacts.readonly": "https://www.googleapis.com/auth/contacts.readonly",
-    "docs":              "https://www.googleapis.com/auth/documents",
-    "docs.readonly":     "https://www.googleapis.com/auth/documents.readonly",
-    "userinfo.email":    "https://www.googleapis.com/auth/userinfo.email",
-    "userinfo.profile":  "https://www.googleapis.com/auth/userinfo.profile",
-}
-
-
 @main.command()
 @click.argument("name")
 def credential(name: str):
@@ -586,112 +570,33 @@ def credential(name: str):
     provider = CREDENTIAL_PROVIDERS[choice - 1][0]
 
     if provider == "google":
-        from choola.database import get_credential as _get_credential
-        existing = _get_credential(name)
-        existing_tokens: dict = {}
-        prior_scope_ids: list[str] = []
-        if existing and existing.get("provider") == "google":
-            try:
-                existing_tokens = json.loads(existing["value"])
-                prior_scope_ids = existing_tokens.get("scopes") or []
-            except json.JSONDecodeError:
-                pass
-            click.secho(
-                f"Extending existing Google credential '{name}'. "
-                f"Current scopes: {', '.join(prior_scope_ids) or '(none)'}",
-                fg="yellow",
-            )
-
-        client_id = click.prompt(
-            "Client ID" + (" (leave blank to reuse stored)" if existing_tokens else ""),
-            default=existing_tokens.get("client_id", ""),
-            show_default=False,
-        ).strip()
-        client_secret = click.prompt(
-            "Client Secret (hidden)" + (" — leave blank to reuse stored" if existing_tokens else ""),
-            default=existing_tokens.get("client_secret", ""),
-            hide_input=True,
-            show_default=False,
-        ).strip()
-        if not client_id or not client_secret:
-            click.secho("client_id and client_secret are required.", fg="red")
-            raise SystemExit(1)
-
+        # Google's OOB flow (urn:ietf:wg:oauth:2.0:oob) was retired in 2022,
+        # so the CLI can't complete OAuth2 on its own. The server has a
+        # working browser flow with a real redirect URI — point the user there.
         click.echo()
-        click.echo("Available scopes (comma-separated ids):")
-        for sid in GOOGLE_SCOPE_CATALOG:
-            marker = " [current]" if sid in prior_scope_ids else ""
-            click.echo(f"  {sid}{marker}")
-        picked_raw = click.prompt(
-            "Enter scope ids",
-            default=",".join(prior_scope_ids) if prior_scope_ids else "",
-            show_default=bool(prior_scope_ids),
-        )
-        picked = [s.strip() for s in picked_raw.split(",") if s.strip()]
-        unknown = [s for s in picked if s not in GOOGLE_SCOPE_CATALOG]
-        if unknown:
-            click.secho(f"Unknown scope id(s): {', '.join(unknown)}", fg="red")
-            raise SystemExit(1)
-        scope_ids = sorted(set(prior_scope_ids) | set(picked))
-        if not scope_ids:
-            click.secho("At least one scope is required.", fg="red")
-            raise SystemExit(1)
-        scope_urls = [GOOGLE_SCOPE_CATALOG[s] for s in scope_ids]
+        click.secho("Google OAuth2 must be completed in the browser.", fg="yellow")
+        click.echo("  1. Start the server:    choola start")
+        click.echo("  2. Open:                http://localhost:5000")
+        click.echo("  3. Settings → Credentials → Add → Google (OAuth2)")
+        click.echo(f"     Use the name: {name}")
+        raise SystemExit(0)
 
-        from urllib.parse import urlencode
-
-        redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
-        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": " ".join(scope_urls),
-            "access_type": "offline",
-            "prompt": "consent",
-            "include_granted_scopes": "true",
-        })
-
-        click.echo()
-        click.echo("Open this URL in your browser to authorize:")
-        click.echo()
-        click.secho(f"  {auth_url}", fg="cyan")
-        click.echo()
-        code = click.prompt("Paste the authorization code here")
-
-        import requests as http_requests
-
-        token_url = "https://oauth2.googleapis.com/token"
-        token_resp = http_requests.post(token_url, data={
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        })
-
-        if token_resp.status_code != 200:
-            click.secho(f"Token exchange failed: {token_resp.text}", fg="red")
-            raise SystemExit(1)
-
-        tokens = token_resp.json()
-        granted_urls = (tokens.get("scope") or "").split()
-        url_to_id = {url: sid for sid, url in GOOGLE_SCOPE_CATALOG.items()}
-        granted_ids = [url_to_id[u] for u in granted_urls if u in url_to_id]
-
-        value = json.dumps({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "access_token": tokens.get("access_token"),
-            "refresh_token": tokens.get("refresh_token"),
-            "token_uri": token_url,
-            "scopes": granted_ids or scope_ids,
-            "scope_urls": granted_urls,
-        })
-    else:
-        value = click.prompt("API key (hidden)", hide_input=True)
+    value = click.prompt("API key (hidden)", hide_input=True)
 
     upsert_credential(name, provider, value)
     click.secho(f"Credential '{name}' saved (provider: {provider}).", fg="green")
+
+
+@main.command("credentials")
+def credentials_list():
+    """List stored credentials (names + providers only — values never shown)."""
+    init_db()
+    rows = list_credentials()
+    if not rows:
+        click.echo("No credentials stored. Use `choola credential <name>` to add one.")
+        return
+    for row in rows:
+        click.echo(f"  {row['name']:<30}  [{row['provider']}]")
 
 
 @main.command()

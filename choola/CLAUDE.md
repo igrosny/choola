@@ -1,8 +1,27 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Choola — Workflow Authoring Guide
 
 This file defines the rules for building workflows with Choola. It is the single source of truth for any agent or developer creating or editing workflows.
 
 **Working-directory context.** When Claude Code is launched from inside a `workflows/<name>/` directory, any unqualified reference to "the workflow" in the user's prompt (create, update, add a node, rename, etc.) refers to the workflow rooted at the current working directory. Do not ask which workflow is meant unless the prompt explicitly names a different one.
+
+## Repository Layout
+
+This repo is a **workspace for authoring Choola workflows**, not the engine itself.
+
+- `workflows/` — one subdirectory per workflow. Empty in a fresh checkout.
+- `.venv/` — virtualenv with the `choola` engine installed. Activate with `source .venv/bin/activate` before any `choola` command.
+- Core node base classes live in the installed package at `.venv/lib/python*/site-packages/choola/core/nodes/` — read them there when you need to know what a base class exposes. Never copy them into a workflow.
+- There is no build, lint, or test pipeline in this workspace. Engine-level tests live upstream in `../choola`. Validate node edits with `python -c "from workflows.<name>.nodes.<node> import *"` or `choola list`, then `choola replay` against an existing evaluation.
+
+## Useful CLI additions
+
+In addition to the commands listed under `## CLI` below:
+
+- `choola explain <workflow>` — prints each node's title and description in DAG order. Fastest way to orient yourself in an unfamiliar workflow without opening every node file.
 
 ## Workflow Structure
 
@@ -257,7 +276,7 @@ Workflows regularly touch paid APIs (LLMs, third-party data providers). These ru
 
 4. **Replay, don't re-run.** When iterating on a downstream node, default to `choola replay <workflow> <run_id> <node_id>` against an existing evaluation. Use `choola run` only for the first happy-path test or when upstream data has genuinely changed.
 
-5. **No live calls during scaffolding.** While creating or editing a workflow, stop at writing nodes and import-checking them (`python -c "import ..."` or `choola list`). Do not invoke `choola run` until the user confirms the required credentials exist and approves the spend.
+5. **No live calls during scaffolding.** While creating or editing a workflow, stop at writing nodes and import-checking them (`python -c "import ..."` or `choola list`). Before suggesting `choola run`, verify the required credentials exist with `choola credentials` (lists names + providers, never values) — don't ask the user "do you have credential X?" when you can check yourself. Still get the user's approval for the spend before the first live invocation.
 
 6. **Cheapest model by default.** Classification and filter loops default to Haiku or Gemini Flash. Escalate to Sonnet/Opus only when the user asks.
 
@@ -389,6 +408,8 @@ choola run <workflow_name> --payload '{}' # Run headlessly
 choola replay <workflow> <run_id> <node_id>  # Re-run one node with saved input
 choola nodes                             # List core node types
 choola dream                             # Train XGBoost classifiers for LLML nodes
+choola credential <name>                 # Store a credential interactively
+choola credentials                       # List stored credentials (names + providers, never values)
 ```
 
 ## MCP — every workflow as an AI tool

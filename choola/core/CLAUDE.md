@@ -243,6 +243,38 @@ result = await self.vector_query(
 
 **Setup:** In Settings > Credentials, select the "Google (OAuth2)" provider, enter your Google Cloud OAuth2 Client ID and Client Secret (with Gmail API enabled), tick the `gmail.send` scope, then click "Connect with Google". If the credential already exists you can re-authorize with additional scopes checked — the flow extends the same credential rather than creating a new one. The sender address is the authenticated Google account.
 
+## GoogleSheets (`choola.core.nodes.google_sheets.GoogleSheets`)
+
+**Category:** processing
+**Purpose:** Read, append, update, or clear ranges in a Google Sheet via the Sheets v4 API.
+
+**Requires:** A stored credential (`await self.get_credential(name)`) with provider `google`. Read operations accept `sheets` or `sheets.readonly`; write operations (`append`, `update`, `clear`) require the `sheets` scope.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `credential_name` | string | yes | `google` | Stored Google OAuth2 credential. Read accepts `sheets` or `sheets.readonly`; writes need `sheets`. |
+| `operation` | select | no | `read` | `read`, `append`, `update`, `clear` |
+| `spreadsheet_id` | string | yes | — | Spreadsheet ID from the sheet URL; `{key}` interpolates payload values |
+| `range` | string | no | `Sheet1` | A1 notation, e.g. `Sheet1!A1:D10`; `{key}` interpolates payload values |
+| `values` | json | no | `[]` | Append/update only — 2D array of rows OR list of `{column: value}` dicts (mapped against the sheet's header row). String leaves support `{key}` interpolation. |
+| `value_input_option` | select | no | `USER_ENTERED` | `USER_ENTERED` (parses formulas/dates) or `RAW` |
+| `rows_as_dicts` | select | no | `true` | On read: treat row 1 as headers and return list of dicts |
+
+**Output payload:** adds `sheets_operation` (str), `sheets_spreadsheet_id` (str), `sheets_range` (str). Per-operation:
+- `read`: `rows` (list of dicts when `rows_as_dicts=true`, else raw 2D array), `row_count` (int)
+- `append`: `appended_rows` (int)
+- `update`: `updated_cells` (int)
+- `clear`: no extra keys
+
+**Setup:** In Settings > Credentials, select the "Google (OAuth2)" provider, enable the Google Sheets API on your Google Cloud project, then tick the `sheets` scope (or `sheets.readonly` for read-only nodes) and click "Connect with Google". The same credential can hold additional scopes (Gmail, Drive, etc.) — re-authorizing extends it.
+
+**Notes:**
+- The credential's `provider` must be `google` and its stored `scopes` must include `sheets` (or `sheets.readonly` for read).
+- `range` quirks: bare `Sheet1` reads/writes the whole tab; `Sheet1!A:A` is a whole column; `Sheet1!A1` is a single cell. The Sheets API determines the actual touched range and returns it in `sheets_range`.
+- For dict-keyed `values`, the node first fetches row 1 of the target sheet to learn the column order, then maps each dict by header. Missing keys become empty strings.
+- The access token is validated against Google's `tokeninfo` endpoint and refreshed via the stored `refresh_token` if expired.
+
 ## Branching & Merging (Engine Features)
 
 These are engine-level capabilities available to any node, not a separate core node class.
