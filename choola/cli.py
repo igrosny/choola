@@ -32,31 +32,27 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import functools
 import importlib
 import importlib.util
 import json
 import shutil
 import sys
-import threading
-import time
 import traceback
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import click
 
+from choola import engine
 from choola.core.base_node import BaseNode
 from choola.database import (
+    get_credential_async,
     get_global_async,
     init_db,
-    insert_run_log,
-    set_global_async,
-    get_credential_async,
     list_credentials,
+    set_global_async,
     upsert_credential,
     workflow_db_execute_async,
     workflow_db_query_async,
@@ -66,14 +62,7 @@ from choola.database import (
     workflow_vector_get_async,
     workflow_vector_query_async,
 )
-from choola.evaluations import (
-    build_evaluation,
-    capture_payload,
-    make_node_eval,
-    save_evaluation,
-)
-from choola import tokens as token_tracker
-from choola.tokens import TokenLimitExceeded
+from choola.engine import topological_sort  # re-exported for tests
 
 # Package root — used to locate the bundled CLAUDE.md
 _PKG_ROOT = Path(__file__).resolve().parent
@@ -152,29 +141,6 @@ def build_workflow(registry: dict[str, type[BaseNode]]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
-    id_set = {n["id"] for n in nodes}
-    in_degree: dict[str, int] = {nid: 0 for nid in id_set}
-    adjacency: dict[str, list[str]] = defaultdict(list)
-    for edge in edges:
-        src, tgt = edge["source"], edge["target"]
-        if src in id_set and tgt in id_set:
-            adjacency[src].append(tgt)
-            in_degree[tgt] += 1
-    q: deque[str] = deque(nid for nid, deg in in_degree.items() if deg == 0)
-    order: list[str] = []
-    while q:
-        nid = q.popleft()
-        order.append(nid)
-        for nb in adjacency[nid]:
-            in_degree[nb] -= 1
-            if in_degree[nb] == 0:
-                q.append(nb)
-    if len(order) != len(id_set):
-        raise ValueError("Cycle detected in workflow topology")
-    return order
-
-
 def _elapsed_str(start_iso: str, end_iso: str) -> str:
     """Return a human-readable elapsed time string like '1.2s' or '350ms'."""
     start = datetime.fromisoformat(start_iso)
@@ -189,134 +155,56 @@ def _elapsed_str(start_iso: str, end_iso: str) -> str:
 # Headless execution engine
 # ------------------------------------------------------------------
 async def execute_workflow(workflow_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    import uuid
+    """Execute a workflow headlessly via the shared engine.
 
-    run_id = uuid.uuid4().hex[:12]
+    Loads node classes from ``workflows/<name>/nodes/`` in the current working
+    directory, builds the DAG, and delegates the run to
+    :func:`choola.engine.execute_dag` with a click-based emit callback for
+    per-node start/end output.
+    """
     registry = load_workflow_classes(workflow_name)
     wf = build_workflow(registry)
     sorted_ids = topological_sort(wf["nodes"], wf["edges"])
-    node_lookup = {n["id"]: n for n in wf["nodes"]}
 
-    context: dict[str, Any] = {
-        "workflow": workflow_name,
-        "run_id": run_id,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-
+    run_id = engine.make_run_id()
     click.echo(f"[choola] Executing workflow: {workflow_name}  (run_id={run_id})")
     click.echo(f"[choola] Nodes in order: {sorted_ids}\n")
 
-    initial_payload = capture_payload(payload)
-    node_evals: list[dict] = []
-    token_tracker.init_run(run_id)
+    started_at: dict[str, str] = {}
 
-    for node_id in sorted_ids:
-        node_entry = node_lookup[node_id]
-        node_type = node_entry["type"]
-        cls = node_entry["cls"]
+    def cli_emit(event: str, data: dict) -> None:
+        if event != "node_status":
+            return
+        node_id = data.get("node_id", "")
+        status = data.get("status")
+        if status == "RUNNING":
+            started_at[node_id] = datetime.now(timezone.utc).isoformat()
+            click.echo(f"  RUNNING    {node_id}")
+        elif status == "COMPLETED":
+            now = datetime.now(timezone.utc).isoformat()
+            elapsed = _elapsed_str(started_at.get(node_id, now), now)
+            click.secho(f"  COMPLETED  {node_id}  {elapsed}", fg="green")
+        elif status == "ERROR":
+            err = data.get("error", "")
+            click.secho(f"  ERROR      {node_id}: {err}", fg="red")
+        elif status == "SKIPPED":
+            click.secho(f"  SKIPPED    {node_id}", fg="yellow")
 
-        instance = cls()
-        instance._db_get_global = get_global_async
-        instance._db_set_global = set_global_async
-        instance._db_get_credential = get_credential_async
-        instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
-        instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
-        instance._vector_add = functools.partial(workflow_vector_add_async, workflow_name)
-        instance._vector_query = functools.partial(workflow_vector_query_async, workflow_name)
-        instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
-        instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
-        instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
-        instance._token_reporter = functools.partial(token_tracker.report, run_id)
+    result = await engine.execute_dag(workflow_name, wf, payload, run_id, emit=cli_emit)
 
-        now = datetime.now(timezone.utc).isoformat()
-        payload_before = capture_payload(payload)
+    final_payload = result["payload"] or {}
+    eval_path = result["evaluation_path"]
+    run_tokens = result["tokens"]
 
-        # Spinner runs while the node executes
-        spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        stop_spinner = threading.Event()
-
-        def _spin(_label=f"{cls.name} ({node_id})"):
-            i = 0
-            while not stop_spinner.is_set():
-                char = spinner_chars[i % len(spinner_chars)]
-                click.echo(f"\r  {char} RUNNING  {_label}  ", nl=False)
-                i += 1
-                time.sleep(0.08)
-
-        spin_thread = threading.Thread(target=_spin, daemon=True)
-        spin_thread.start()
-
-        try:
-            payload = await instance.execute(payload, context)
-            finished = datetime.now(timezone.utc).isoformat()
-            stop_spinner.set()
-            spin_thread.join()
-            elapsed = _elapsed_str(now, finished)
-            click.echo(f"\r  COMPLETED  {cls.name} -> {json.dumps(payload, default=str)}  ", nl=False)
-            click.secho(elapsed, fg="green")
-            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
-            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
-            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
-            insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload_before, payload_out=payload, started_at=now, finished_at=finished,
-                           prompt_tokens=prompt_t, completion_tokens=completion_t)
-            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished,
-                                              payload_before, capture_payload(payload), tokens=node_tokens))
-
-            try:
-                token_tracker.check_limits(run_id)
-            except TokenLimitExceeded as cap_exc:
-                tb = str(cap_exc)
-                click.secho(f"  ABORTED  token cap breached: {tb}", fg="red")
-                evaluation = build_evaluation(
-                    run_id, workflow_name, context["started_at"], initial_payload,
-                    node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
-                )
-                save_evaluation(workflow_name, evaluation)
-                token_tracker.clear_run(run_id)
-                raise
-        except TokenLimitExceeded:
-            raise
-        except Exception as exc:
-            finished = datetime.now(timezone.utc).isoformat()
-            stop_spinner.set()
-            spin_thread.join()
-            tb = traceback.format_exc()
-            click.echo(f"\r  ", nl=False)
-            click.secho(f"ERROR  {cls.name}: {exc}", fg="red")
-            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
-            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
-            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
-            insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
-                           payload_in=payload_before, error=tb,
-                           started_at=now, finished_at=finished,
-                           prompt_tokens=prompt_t, completion_tokens=completion_t)
-            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished,
-                                              payload_before, error=tb, tokens=node_tokens))
-            evaluation = build_evaluation(
-                run_id, workflow_name, context["started_at"], initial_payload,
-                node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
-            )
-            save_evaluation(workflow_name, evaluation)
-            token_tracker.clear_run(run_id)
-            raise
-
-    run_tokens = token_tracker.get_run_breakdown(run_id)
-    evaluation = build_evaluation(
-        run_id, workflow_name, context["started_at"], initial_payload,
-        node_evals, "COMPLETED", payload, tokens=run_tokens,
-    )
-    eval_path = save_evaluation(workflow_name, evaluation)
-    click.echo(f"\n[choola] Workflow completed. Final payload:")
-    click.echo(json.dumps(payload, indent=2, default=str))
+    click.echo("\n[choola] Workflow completed. Final payload:")
+    click.echo(json.dumps(final_payload, indent=2, default=str))
     click.echo(f"[choola] Evaluation saved: {eval_path}")
     if run_tokens["total_tokens"]:
         click.echo(
             f"[choola] Tokens used: {run_tokens['total_tokens']} "
             f"(prompt={run_tokens['prompt_tokens']}, completion={run_tokens['completion_tokens']})"
         )
-    token_tracker.clear_run(run_id)
-    return payload
+    return final_payload
 
 
 # ------------------------------------------------------------------
@@ -534,9 +422,10 @@ def nodes(workflow_name: str | None):
         import choola.core.nodes.vectordb as _vdb
         import choola.core.nodes.gmail as _gmail
         import choola.core.nodes.google_sheets as _gs
+        import choola.core.nodes.router as _router
         seen = set()
         skip = {BaseNode, Trigger}
-        for mod in (_ft, _wt, _llm, _mt, _http, _db, _vdb, _gmail, _gs):
+        for mod in (_ft, _wt, _llm, _mt, _http, _db, _vdb, _gmail, _gs, _router):
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 if (

@@ -220,13 +220,47 @@ Trigger (next_nodes=["branch_a", "branch_b"])
               └──> MergePoint (next_nodes=[])
 ```
 
-**Split**: When a node has multiple `next_nodes`, each downstream node gets its own deep copy of the parent's output. Branches are isolated — mutations in one branch don't affect the other.
+**Split**: When a node has multiple `next_nodes`, each downstream node gets its own deep copy of the parent's output. Branches are isolated — mutations in one branch don't affect the other. Sibling branches run **concurrently** when their work is independent — see Parallel Execution below.
 
-**Merge**: When multiple branches feed into the same node, their outputs are shallow-merged in topological order (last-writer-wins for duplicate keys). The merge node can also access individual parent outputs via `context["parent_outputs"]` — a dict keyed by parent `node_id`.
+**Merge**: When multiple branches feed into the same node, their outputs are shallow-merged in topological order (last-writer-wins for duplicate keys). The merge node can also access individual parent outputs via `context["parent_outputs"]` — a dict keyed by parent `node_id`. A merge node is an implicit "wait for all" — the engine schedules it only after every active parent has finished.
+
+### Parallel Execution
+
+Independent branches run concurrently. The engine fires each node as soon as all its parents have finished (completed or skipped) — there is no level-by-level gating and no per-workflow opt-in. A workflow that fans the trigger into a "thinking LLM" node, an HTTP search node, and a vector lookup node will run all three in parallel, and a downstream merge node fires the moment the last one finishes.
+
+This is transparent to node code. Nodes communicate via the payload dict; each branch receives a deep copy of its parent's output, so concurrent mutations don't interfere. Linear chains keep their byte-identical sequential behaviour because the ready set stays size 1.
+
+**Fail-fast cancellation.** If any node raises, the engine cancels every in-flight sibling task (delivering `asyncio.CancelledError` at their next `await` point), records each as `ERROR` with a "Cancelled: sibling node 'X' failed with …" message, saves the ERROR evaluation, and re-raises. Token-cap breaches (`TokenLimitExceeded`) follow the same path.
+
+**CPU-bound work.** Wrap blocking sections with `await asyncio.to_thread(...)` so they don't stall the event loop while siblings are waiting:
+
+```python
+async def execute(self, payload, context):
+    result = await asyncio.to_thread(self._expensive_sync_call, payload["input"])
+    return result
+```
+
+The DB / credential / vector helpers on `BaseNode` are async-compatible but currently block the loop while their SQLite call runs — that's a throughput limitation, not a correctness issue. A workflow with N concurrent DB-heavy nodes will serialise at the SQLite level.
 
 ### Conditional Routing
 
-Any node can selectively activate only some of its `next_nodes` by returning a special `__active_branches__` key in its output payload. The engine pops this key (downstream nodes never see it) and marks unreachable nodes as `SKIPPED`.
+For the common case — "look at one payload key and pick one branch out of N" — use the `Router` core node (see `choola/core/CLAUDE.md`). Define a wrapper:
+
+```python
+from choola.core.nodes.router import Router
+
+class BankRouter(Router):
+    node_id = "bank_router"
+    next_nodes = ["chase_parser", "wells_fargo_parser", "generic_parser"]
+    fields = [
+        {"name": "match_key", "type": "string", "default": "bank"},
+        {"name": "branches", "type": "json",
+         "default": {"chase": "chase_parser", "wells_fargo": "wells_fargo_parser"}},
+        {"name": "default", "type": "string", "default": "generic_parser"},
+    ]
+```
+
+For routing logic that doesn't fit value-equality, any node can selectively activate only some of its `next_nodes` by returning the special `__active_branches__` key. The engine pops this key (downstream nodes never see it) and marks unreachable nodes as `SKIPPED`.
 
 ```python
 class MyRouter(BaseNode):

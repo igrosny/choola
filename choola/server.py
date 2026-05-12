@@ -36,7 +36,6 @@ import sys
 import threading
 import traceback
 import uuid
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,35 +44,18 @@ import anthropic
 from flask import Flask, Response, jsonify, request
 from flask_sock import Sock
 
+from choola import engine
 from choola.core.base_node import BaseNode
-from choola.evaluations import (
-    build_evaluation,
-    capture_payload,
-    make_node_eval,
-    save_evaluation,
-)
+from choola.engine import topological_sort  # re-exported for backward compatibility
 from choola.database import (
     DB_PATH,
     delete_credential,
     get_credential,
-    get_credential_async,
-    get_global_async,
     get_global_sync,
     init_db,
-    insert_run_log,
     list_credentials,
-    set_global_async,
     upsert_credential,
-    workflow_db_execute_async,
-    workflow_db_query_async,
-    workflow_vector_add_async,
-    workflow_vector_count_async,
-    workflow_vector_delete_async,
-    workflow_vector_get_async,
-    workflow_vector_query_async,
 )
-from choola import tokens as token_tracker
-from choola.tokens import TokenLimitExceeded
 
 # ------------------------------------------------------------------
 # App setup
@@ -203,232 +185,31 @@ def save_topology(workflow_name: str, data: dict) -> None:
     topo_path.write_text(json.dumps(data, indent=2))
 
 
-def topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
-    """Return node IDs in execution order (Kahn's algorithm)."""
-    id_set = {n["id"] for n in nodes}
-    in_degree: dict[str, int] = {nid: 0 for nid in id_set}
-    adjacency: dict[str, list[str]] = defaultdict(list)
-
-    for edge in edges:
-        src, tgt = edge["source"], edge["target"]
-        if src in id_set and tgt in id_set:
-            adjacency[src].append(tgt)
-            in_degree[tgt] += 1
-
-    q: deque[str] = deque(nid for nid, deg in in_degree.items() if deg == 0)
-    order: list[str] = []
-
-    while q:
-        nid = q.popleft()
-        order.append(nid)
-        for neighbour in adjacency[nid]:
-            in_degree[neighbour] -= 1
-            if in_degree[neighbour] == 0:
-                q.append(neighbour)
-
-    if len(order) != len(id_set):
-        raise ValueError("Cycle detected in workflow topology")
-
-    return order
-
-
 # ------------------------------------------------------------------
-# Execution engine
+# Execution engine — delegates to choola.engine, supplying an SSE emit callback
 # ------------------------------------------------------------------
-def _emit(run_id: str, event: str, data: dict) -> None:
+def _sse_emit(run_id: str, event: str, data: dict) -> None:
     """Push an SSE event onto the bus for the given run."""
     bus = sse_buses.get(run_id)
     if bus:
         bus.put(f"event: {event}\ndata: {json.dumps(data)}\n\n")
 
 
+# Back-compat alias for code that imported the old private emitter.
+def _emit(run_id: str, event: str, data: dict) -> None:
+    _sse_emit(run_id, event, data)
+
+
 def run_workflow(workflow_name: str, payload: dict[str, Any], run_id: str | None = None) -> dict:
     """Execute a workflow synchronously (uses asyncio.run internally)."""
-    run_id = run_id or uuid.uuid4().hex[:12]
+    run_id = run_id or engine.make_run_id()
     return asyncio.run(_run_workflow_async(workflow_name, payload, run_id))
-
-
-def _mark_skipped(
-    inactive_starts: set[str],
-    adjacency: dict[str, list[str]],
-    parents: dict[str, list[str]],
-    skipped: set[str],
-    router_id: str,
-) -> None:
-    """BFS from *inactive_starts*, skipping nodes reachable only via dead paths.
-
-    A merge-point node is skipped only when ALL of its parents are either
-    already skipped or are inactive outputs of this router.
-    """
-    candidates: deque[str] = deque(inactive_starts)
-    while candidates:
-        nid = candidates.popleft()
-        if nid in skipped:
-            continue
-        all_parents_dead = all(
-            p in skipped or (p == router_id and nid in inactive_starts)
-            for p in parents.get(nid, [])
-        )
-        if all_parents_dead:
-            skipped.add(nid)
-            for child in adjacency.get(nid, []):
-                if child not in skipped:
-                    candidates.append(child)
 
 
 async def _run_workflow_async(workflow_name: str, payload: dict[str, Any], run_id: str) -> dict:
     wf = build_workflow(workflow_name)
-    sorted_ids = topological_sort(wf["nodes"], wf["edges"])
-    node_lookup = {n["id"]: n for n in wf["nodes"]}
-
-    # Reverse-edge map: for each node, which nodes feed into it
-    parents: dict[str, list[str]] = defaultdict(list)
-    adjacency: dict[str, list[str]] = defaultdict(list)
-    for edge in wf["edges"]:
-        parents[edge["target"]].append(edge["source"])
-        adjacency[edge["source"]].append(edge["target"])
-
-    context: dict[str, Any] = {
-        "workflow": workflow_name,
-        "run_id": run_id,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    outputs: dict[str, dict[str, Any]] = {}
-    skipped: set[str] = set()
-    initial_payload = capture_payload(payload)
-    node_evals: list[dict] = []
-    token_tracker.init_run(run_id)
-
-    for node_id in sorted_ids:
-        node_entry = node_lookup[node_id]
-        node_type = node_entry["type"]
-        cls = node_entry["cls"]
-
-        # Skip nodes on inactive branches
-        if node_id in skipped:
-            now = datetime.now(timezone.utc).isoformat()
-            _emit(run_id, "node_status", {"node_id": node_id, "status": "SKIPPED"})
-            insert_run_log(run_id, workflow_name, node_id, node_type, "SKIPPED",
-                           started_at=now, finished_at=now)
-            node_evals.append(make_node_eval(node_id, node_type, "SKIPPED", now, now, {}))
-            continue
-
-        # Assemble input from parent outputs
-        node_parents = parents.get(node_id, [])
-        active_parents = [p for p in node_parents if p not in skipped]
-
-        if not node_parents:
-            # Root / trigger node — gets the original workflow payload
-            node_input = capture_payload(payload)
-        elif len(active_parents) == 1:
-            # Single parent — pass its output directly (backward compatible)
-            node_input = capture_payload(outputs[active_parents[0]])
-        else:
-            # Merge point — shallow-merge active parents in topo order
-            node_input = {}
-            for pid in sorted_ids:
-                if pid in active_parents:
-                    node_input.update(capture_payload(outputs[pid]))
-
-        # Expose per-parent outputs for merge-aware nodes
-        context["parent_outputs"] = {
-            pid: capture_payload(outputs[pid]) for pid in active_parents
-        }
-
-        instance = cls()
-        instance._db_get_global = get_global_async
-        instance._db_set_global = set_global_async
-        instance._db_get_credential = get_credential_async
-        instance._db_query = functools.partial(workflow_db_query_async, workflow_name)
-        instance._db_execute = functools.partial(workflow_db_execute_async, workflow_name)
-        instance._vector_add = functools.partial(workflow_vector_add_async, workflow_name)
-        instance._vector_query = functools.partial(workflow_vector_query_async, workflow_name)
-        instance._vector_get = functools.partial(workflow_vector_get_async, workflow_name)
-        instance._vector_delete = functools.partial(workflow_vector_delete_async, workflow_name)
-        instance._vector_count = functools.partial(workflow_vector_count_async, workflow_name)
-        instance._token_reporter = functools.partial(token_tracker.report, run_id)
-
-        now = datetime.now(timezone.utc).isoformat()
-        payload_before = capture_payload(node_input)
-        _emit(run_id, "node_status", {"node_id": node_id, "status": "RUNNING", "payload": node_input})
-        insert_run_log(run_id, workflow_name, node_id, node_type, "RUNNING", payload_in=payload_before, started_at=now)
-
-        try:
-            result = await instance.execute(node_input, context)
-
-            # Conditional routing: pop __active_branches__ before storing
-            active_branches = result.pop("__active_branches__", None)
-            outputs[node_id] = result
-
-            if active_branches is not None:
-                inactive = set(cls.next_nodes) - set(active_branches)
-                if inactive:
-                    _mark_skipped(inactive, adjacency, parents, skipped, node_id)
-
-            finished = datetime.now(timezone.utc).isoformat()
-            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
-            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
-            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
-            _emit(run_id, "node_status", {"node_id": node_id, "status": "COMPLETED", "payload": result})
-            insert_run_log(run_id, workflow_name, node_id, node_type, "COMPLETED",
-                           payload_in=payload_before, payload_out=result, started_at=now, finished_at=finished,
-                           prompt_tokens=prompt_t, completion_tokens=completion_t)
-            node_evals.append(make_node_eval(node_id, node_type, "COMPLETED", now, finished,
-                                              payload_before, capture_payload(result), tokens=node_tokens))
-
-            # Circuit breaker — abort before the next node runs if caps were breached.
-            try:
-                token_tracker.check_limits(run_id)
-            except TokenLimitExceeded as cap_exc:
-                tb = str(cap_exc)
-                _emit(run_id, "run_complete", {"status": "ERROR", "error": tb})
-                evaluation = build_evaluation(
-                    run_id, workflow_name, context["started_at"], initial_payload,
-                    node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
-                )
-                save_evaluation(workflow_name, evaluation)
-                token_tracker.clear_run(run_id)
-                raise
-        except TokenLimitExceeded:
-            raise
-        except Exception as exc:
-            finished = datetime.now(timezone.utc).isoformat()
-            tb = traceback.format_exc()
-            node_tokens = token_tracker.get_node_tokens(run_id, node_id)
-            prompt_t = node_tokens["prompt_tokens"] if node_tokens else 0
-            completion_t = node_tokens["completion_tokens"] if node_tokens else 0
-            _emit(run_id, "node_status", {"node_id": node_id, "status": "ERROR", "error": str(exc)})
-            insert_run_log(run_id, workflow_name, node_id, node_type, "ERROR",
-                           payload_in=payload_before, error=tb, started_at=now, finished_at=finished,
-                           prompt_tokens=prompt_t, completion_tokens=completion_t)
-            node_evals.append(make_node_eval(node_id, node_type, "ERROR", now, finished,
-                                              payload_before, error=tb, tokens=node_tokens))
-            evaluation = build_evaluation(
-                run_id, workflow_name, context["started_at"], initial_payload,
-                node_evals, "ERROR", error=tb, tokens=token_tracker.get_run_breakdown(run_id),
-            )
-            save_evaluation(workflow_name, evaluation)
-            _emit(run_id, "run_complete", {"status": "ERROR", "error": str(exc)})
-            token_tracker.clear_run(run_id)
-            raise
-
-    # Final payload: last executed node's output in topo order
-    final_payload = None
-    for nid in reversed(sorted_ids):
-        if nid not in skipped and nid in outputs:
-            final_payload = outputs[nid]
-            break
-
-    run_tokens = token_tracker.get_run_breakdown(run_id)
-    evaluation = build_evaluation(
-        run_id, workflow_name, context["started_at"], initial_payload,
-        node_evals, "COMPLETED", final_payload, tokens=run_tokens,
-    )
-    save_evaluation(workflow_name, evaluation)
-    _emit(run_id, "run_complete", {"status": "COMPLETED", "payload": final_payload})
-    token_tracker.clear_run(run_id)
-    return {"status": "COMPLETED", "payload": final_payload, "run_id": run_id}
+    emit = functools.partial(_sse_emit, run_id)
+    return await engine.execute_dag(workflow_name, wf, payload, run_id, emit=emit)
 
 
 # ------------------------------------------------------------------

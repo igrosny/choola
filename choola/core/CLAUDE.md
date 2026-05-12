@@ -275,13 +275,49 @@ result = await self.vector_query(
 - For dict-keyed `values`, the node first fetches row 1 of the target sheet to learn the column order, then maps each dict by header. Missing keys become empty strings.
 - The access token is validated against Google's `tokeninfo` endpoint and refreshed via the stored `refresh_token` if expired.
 
+## Router (`choola.core.nodes.router.Router`)
+
+**Category:** routing
+**Purpose:** Activate exactly one of N downstream branches by matching a single payload key against a value map. The declarative way to express the classifier-then-dispatch pattern in the DAG instead of writing custom `execute()` code that sets `__active_branches__` by hand.
+
+**Fields:**
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `match_key` | string | yes | — | Payload key whose value selects the branch. |
+| `branches` | json | yes | `{}` | Mapping of value -> target node_id, e.g. `{"chase": "chase_parser"}`. Keys are stringified for comparison. |
+| `default` | string | no | `""` | node_id to activate when no branch matches. Empty = skip all branches. |
+
+**Output payload:** adds `router_matched` (str or null — the value that matched, `"__default__"` when the default branch fired, or `None` when no branch matched) and the engine-magic `__active_branches__` (popped by the engine before downstream nodes see it).
+
+**Wrapper contract:**
+- The wrapper's `next_nodes` MUST be the full set of possible targets — every value in `branches` plus the `default` if set. The engine uses this list to compute which siblings to SKIP. The Router raises `ValueError` at runtime if a resolved target isn't in `next_nodes`.
+- Match is value-equality with stringification: `str(payload[match_key])` is looked up in `branches`. That means routing on a bool uses `{"True": ..., "False": ...}` as branch keys. For range/threshold routing, do the bucketing in an upstream classifier node that sets a discrete key (e.g. `payload["bucket"] = "high"`), then route on that key.
+- For routing logic that doesn't fit value-equality, write a custom node that sets `payload["__active_branches__"]` directly — the Router is a convenience, not the only path.
+
+**Example wrapper:**
+
+```python
+from choola.core.nodes.router import Router
+
+class BankRouter(Router):
+    node_id = "bank_router"
+    name = "Route by bank"
+    next_nodes = ["chase_parser", "wells_fargo_parser", "generic_parser"]
+    fields = [
+        {"name": "match_key", "type": "string", "default": "bank"},
+        {"name": "branches", "type": "json",
+         "default": {"chase": "chase_parser", "wells_fargo": "wells_fargo_parser"}},
+        {"name": "default", "type": "string", "default": "generic_parser"},
+    ]
+```
+
 ## Branching & Merging (Engine Features)
 
-These are engine-level capabilities available to any node, not a separate core node class.
+These are engine-level capabilities available to any node, not a separate core node class. Independent branches run **concurrently** — see the Parallel Execution subsection in `choola/CLAUDE.md` for details.
 
 ### Conditional Routing (`__active_branches__`)
 
-Any node can return `__active_branches__` in its payload to choose which `next_nodes` to activate. The engine pops this key before passing the payload downstream.
+Any node can return `__active_branches__` in its payload to choose which `next_nodes` to activate. The engine pops this key before passing the payload downstream. For the common "match one key, pick one branch" case, prefer the `Router` core node above — it's a declarative wrapper around this same mechanism.
 
 ```python
 async def execute(self, payload, context):
@@ -296,7 +332,7 @@ Nodes on inactive branches (and their descendants) get `SKIPPED` status. A merge
 
 ### Merge-Point Input (`context["parent_outputs"]`)
 
-When a node has multiple parents (merge point), the engine shallow-merges all active parents' outputs in topological order as the node's input payload. For nodes that need to distinguish which parent produced which data, the individual parent outputs are available in `context["parent_outputs"]` — a dict keyed by parent `node_id`.
+When a node has multiple parents (merge point), the engine shallow-merges all active parents' outputs in topological order as the node's input payload. For nodes that need to distinguish which parent produced which data, the individual parent outputs are available in `context["parent_outputs"]` — a dict keyed by parent `node_id`. With the concurrent scheduler, this is a per-task snapshot taken at spawn time; concurrent tasks don't share `context["parent_outputs"]` state.
 
 ```python
 async def execute(self, payload, context):

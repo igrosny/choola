@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add `Router` core node — declarative value-equality branch picker that wraps the existing `__active_branches__` engine mechanism
+- Add parallel execution: the engine now runs independent DAG branches concurrently via a dynamic ready-queue scheduler, with fail-fast sibling cancellation on error
+- Add tests covering parallel execution speedup, fail-fast cancellation, router routing variants, and conditional+parallel mixed patterns
+
+### Changed
+- Consolidate the CLI and server executors into a single `choola.engine.execute_dag` so `choola run` and the HTTP `/api/workflows/<name>/run` path share one code path; the CLI now properly honours `__active_branches__`, multi-parent merge, and `context["parent_outputs"]`
+- Refactor the `bank-statement` workflow to use the new `Router` core node — split the old `check_duplicate` node into `hash_pdf` (single-job hash + dedup decision) and `dedup_router` (declarative routing)
+
+### Fixed
+- Wire `upload_form` to `hash_pdf` so the bank-statement workflow actually runs its dedup step (the previous `next_nodes = ["analyze_statement"]` bypassed it entirely)
+
+## [0.9.0] - 2026-05-11
+
+### Added
+- Add Google Sheets core node for reading, appending, updating, and clearing ranges via the Sheets API
+- Add multi-scope Google OAuth2 support: scope catalog endpoint, scope checklist in the credentials modal, and per-credential scope tracking so re-authorizing extends rather than replaces granted access
+
+### Changed
+- Default classifier-style nodes (yes/no, fixed-label, sentiment, intent) to extend the LLML core node so repeat patterns hit the local XGBoost cache instead of paid LLM calls
+
+### Fixed
+- Replace the retired Google OOB OAuth flow in `choola credential` with a pointer to the server's browser flow; the OOB redirect URI Google removed in 2022 no longer returns a usable code
+
+### Infrastructure
+- Add test suite covering the database layer, evaluations, token telemetry, base node helpers, core nodes, and the workflow engine
+
 ## [0.8.0] - 2026-04-20
 
 ### Added
