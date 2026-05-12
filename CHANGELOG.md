@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-12
+
 ### Added
 - Add `Router` core node — declarative value-equality branch picker that wraps the existing `__active_branches__` engine mechanism
 - Add parallel execution: the engine now runs independent DAG branches concurrently via a dynamic ready-queue scheduler, with fail-fast sibling cancellation on error
