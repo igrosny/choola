@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This file defines the rules for building workflows with Choola. It is the single source of truth for any agent or developer creating or editing workflows.
 
-**Working-directory context.** When Claude Code is launched from inside a `workflows/<name>/` directory, any unqualified reference to "the workflow" in the user's prompt (create, update, add a node, rename, etc.) refers to the workflow rooted at the current working directory. Do not ask which workflow is meant unless the prompt explicitly names a different one.
+**Working-directory context.** When Claude Code is launched from inside a `workflows/<name>/` directory, the entire conversation is scoped to that workflow. Every request — creating nodes, editing nodes, running, replaying, debugging, explaining, renaming, "the workflow", "this node", "add X", "fix Y" — refers to the workflow rooted at the current working directory, for the full duration of the session. Do not ask which workflow is meant, do not list other workflows, and do not act on a different workflow unless the user explicitly names one ("in workflow `foo`...", "switch to `bar`", or an absolute/relative path pointing elsewhere). An explicit override applies only to that single request; the next unqualified reference snaps back to the CWD workflow.
 
 ## Repository Layout
 

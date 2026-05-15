@@ -43,6 +43,7 @@ from typing import Any
 import anthropic
 from flask import Flask, Response, jsonify, request
 from flask_sock import Sock
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from choola import engine
 from choola.core.base_node import BaseNode
@@ -70,6 +71,10 @@ WORKFLOWS_DIR = CWD / "workflows"
 _STATIC_DIR = ROOT / "static" / "dist"
 
 app = Flask(__name__, static_folder=str(_STATIC_DIR), static_url_path="/")
+# Trust X-Forwarded-Proto / X-Forwarded-Host from a single trusted reverse proxy
+# (e.g. cloudflared) so request.host_url yields the public https://... URL used
+# as the OAuth redirect_uri instead of http://127.0.0.1:5000/.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 sock = Sock(app)
 
 # Global registries populated at startup
