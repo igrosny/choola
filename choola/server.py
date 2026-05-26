@@ -40,7 +40,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import anthropic
 from flask import Flask, Response, jsonify, request
 from flask_sock import Sock
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -83,6 +82,41 @@ workflow_nodes: dict[str, list[type[BaseNode]]] = {}  # "workflow_name" -> [clas
 
 # SSE event bus: run_id -> Queue
 sse_buses: dict[str, queue.Queue] = {}
+
+
+# ------------------------------------------------------------------
+# /api/* bearer-token auth (opt-in via the `api_token` global)
+# ------------------------------------------------------------------
+# Paths under /api/ that must remain open even when api_token is set.
+# - Google's OAuth2 redirect lands on /api/oauth2/google/callback and is signed
+#   via the state parameter, so it doesn't need (and can't have) a bearer token.
+_API_AUTH_EXEMPT_PREFIXES = ("/api/oauth2/google/callback",)
+
+
+@app.before_request
+def _require_api_token():
+    path = request.path or ""
+    if not path.startswith("/api/"):
+        return None
+    if any(path.startswith(p) for p in _API_AUTH_EXEMPT_PREFIXES):
+        return None
+
+    expected = get_global_sync("api_token") or ""
+    if not expected:
+        return None  # auth disabled
+
+    # Browsers' EventSource can't set headers — accept ?token=... for SSE only.
+    supplied = ""
+    header = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if header.startswith(prefix):
+        supplied = header[len(prefix):]
+    elif "/stream/" in path:
+        supplied = request.args.get("token", "")
+
+    if not supplied or not hmac.compare_digest(str(expected), supplied):
+        return jsonify({"error": "Unauthorized"}), 401
+    return None
 
 
 # ------------------------------------------------------------------
@@ -951,283 +985,6 @@ def api_oauth2_google_callback():
     """
 
 
-# ------------------------------------------------------------------
-# Chat with Claude — per-workflow AI assistant
-# ------------------------------------------------------------------
-CHAT_TOOLS = [
-    {
-        "name": "create_node",
-        "description": "Create a new node Python file in the workflow's nodes/ directory. Always generate the full @choola-node docstring and class.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "Python filename, e.g. fetch_api.py (snake_case, no path)",
-                },
-                "source": {
-                    "type": "string",
-                    "description": "Complete Python source code for the node file",
-                },
-            },
-            "required": ["filename", "source"],
-        },
-    },
-    {
-        "name": "edit_node",
-        "description": "Overwrite an existing node file with new source code.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "Existing Python filename to overwrite",
-                },
-                "source": {
-                    "type": "string",
-                    "description": "New complete Python source code",
-                },
-            },
-            "required": ["filename", "source"],
-        },
-    },
-]
-
-# Read project specification — prefer the one in the user's project, fall back to the bundled copy.
-_CLAUDE_MD = ""
-_claude_md_path = CWD / "CLAUDE.md"
-if not _claude_md_path.exists():
-    _claude_md_path = ROOT / "CLAUDE.md"
-if _claude_md_path.exists():
-    _CLAUDE_MD = _claude_md_path.read_text()
-
-# Read base_node.py from the package
-_BASE_NODE_SOURCE = (ROOT / "core" / "base_node.py").read_text()
-
-# Read an example node from the user's project (if any)
-_EXAMPLE_NODE = ""
-if WORKFLOWS_DIR.exists():
-    for _example in WORKFLOWS_DIR.rglob("nodes/*.py"):
-        if not _example.name.startswith("_"):
-            _EXAMPLE_NODE = _example.read_text()
-            break
-
-
-def _gather_core_nodes() -> str:
-    """Collect @choola-node docstrings from all core/nodes/*.py files."""
-    core_nodes_dir = ROOT / "core" / "nodes"
-    if not core_nodes_dir.exists():
-        return "(no core nodes)"
-    parts = []
-    for py_file in sorted(core_nodes_dir.glob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
-        source = py_file.read_text()
-        parts.append(f"--- {py_file.name} ---\n{source}")
-    return "\n\n".join(parts) if parts else "(no core nodes)"
-
-
-def _build_chat_system(workflow_name: str) -> list[dict]:
-    """Build the system prompt as content blocks with prompt caching."""
-    workflow_dir = WORKFLOWS_DIR / workflow_name
-
-    node_sources = {}
-    nodes_dir = workflow_dir / "nodes"
-    if nodes_dir.exists():
-        for py_file in sorted(nodes_dir.glob("*.py")):
-            if not py_file.name.startswith("_"):
-                node_sources[py_file.name] = py_file.read_text()
-
-    node_listing = ""
-    if node_sources:
-        parts = []
-        for fname, src in node_sources.items():
-            parts.append(f"--- {fname} ---\n{src}")
-        node_listing = "\n\n".join(parts)
-    else:
-        node_listing = "(no nodes yet)"
-
-    core_nodes_listing = _gather_core_nodes()
-
-    registered_nodes_info = []
-    for fq_name, cls in node_registry.items():
-        registered_nodes_info.append(
-            f"  - {cls.name} ({fq_name}): {cls.description} [category: {cls.category}]"
-        )
-    registered_listing = "\n".join(registered_nodes_info) if registered_nodes_info else "  (none)"
-
-    static_block = f"""You are an AI assistant that helps users build workflow nodes for Choola, a Python workflow engine.
-
-## Project Specification (CLAUDE.md)
-{_CLAUDE_MD}
-
-## Core nodes (available to all workflows)
-{core_nodes_listing}
-
-## BaseNode contract (core/base_node.py)
-{_BASE_NODE_SOURCE}
-
-## Example node file
-{_EXAMPLE_NODE}
-
-## Rules
-- Every node file MUST start with the @choola-node docstring block.
-- Every node MUST inherit from `choola.core.base_node.BaseNode`.
-- Nodes must be self-contained — no cross-node imports.
-- The `execute` method is async and receives (payload: dict, context: dict) -> dict.
-- Declare class attributes: name, category, description, fields.
-- Valid categories: input, processing, routing, output, general.
-- Use `create_node` to make new node files. Use `edit_node` to modify existing node files.
-- Every node must declare a `node_id` class attribute (unique within the workflow).
-- Use `next_nodes` class attribute (list of node_id strings) to define the DAG edges.
-- No topology.json needed — the DAG is built from node class attributes.
-- Keep nodes simple and focused on a single task.
-- Be concise in your responses."""
-
-    try:
-        wf = build_workflow(workflow_name)
-        wf_summary = json.dumps(
-            {"nodes": [{"id": n["id"], "type": n["type"]} for n in wf["nodes"]], "edges": wf["edges"]},
-            indent=2,
-        )
-    except ValueError:
-        wf_summary = "(no nodes with node_id found yet)"
-
-    dynamic_block = f"""## Current workflow: {workflow_name}
-
-## Current DAG (derived from node classes)
-{wf_summary}
-
-## All registered node types
-{registered_listing}
-
-## Existing nodes in this workflow
-{node_listing}"""
-
-    return [
-        {
-            "type": "text",
-            "text": static_block,
-            "cache_control": {"type": "ephemeral"},
-        },
-        {
-            "type": "text",
-            "text": dynamic_block,
-        },
-    ]
-
-
-def _handle_tool_call(workflow_name: str, tool_name: str, tool_input: dict) -> dict:
-    """Execute a tool call and return the result."""
-    workflow_dir = WORKFLOWS_DIR / workflow_name
-    nodes_dir = workflow_dir / "nodes"
-
-    if tool_name == "create_node":
-        filename = tool_input["filename"]
-        source = tool_input["source"]
-        if not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
-            return {"error": f"Invalid filename: {filename}. Use snake_case.py"}
-        filepath = nodes_dir / filename
-        if filepath.exists():
-            return {"error": f"{filename} already exists. Use edit_node to modify it."}
-        nodes_dir.mkdir(parents=True, exist_ok=True)
-        init_file = nodes_dir / "__init__.py"
-        if not init_file.exists():
-            init_file.write_text("")
-        filepath.write_text(source)
-        discover_nodes()
-        return {"ok": True, "path": str(filepath.relative_to(CWD))}
-
-    elif tool_name == "edit_node":
-        filename = tool_input["filename"]
-        source = tool_input["source"]
-        if not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
-            return {"error": f"Invalid filename: {filename}"}
-        filepath = nodes_dir / filename
-        if not filepath.exists():
-            return {"error": f"{filename} not found. Use create_node for new files."}
-        filepath.write_text(source)
-        discover_nodes()
-        return {"ok": True, "path": str(filepath.relative_to(CWD))}
-
-    return {"error": f"Unknown tool: {tool_name}"}
-
-
-@app.route("/api/workflows/<name>/chat", methods=["POST"])
-def api_chat(name: str):
-    """Chat with Claude about this workflow. Returns SSE stream."""
-    workflow_dir = WORKFLOWS_DIR / name
-    if not workflow_dir.exists():
-        return jsonify({"error": f"Workflow '{name}' not found"}), 404
-
-    body = request.get_json(force=True)
-    user_messages = body.get("messages", [])
-    if not user_messages:
-        return jsonify({"error": "No messages provided"}), 400
-
-    system_prompt = _build_chat_system(name)
-
-    api_messages = []
-    for m in user_messages:
-        api_messages.append({"role": m["role"], "content": m["content"]})
-
-    client = anthropic.Anthropic()
-
-    def generate():
-        current_messages = list(api_messages)
-
-        while True:
-            try:
-                response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=4096,
-                    system=system_prompt,
-                    tools=CHAT_TOOLS,
-                    messages=current_messages,
-                )
-            except anthropic.APIError as exc:
-                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
-                return
-
-            text_parts = []
-            tool_uses = []
-            assistant_content = []
-
-            for block in response.content:
-                if block.type == "text":
-                    text_parts.append(block.text)
-                    assistant_content.append({"type": "text", "text": block.text})
-                elif block.type == "tool_use":
-                    tool_uses.append(block)
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    })
-
-            if text_parts:
-                yield f"data: {json.dumps({'type': 'text', 'content': ''.join(text_parts)})}\n\n"
-
-            if response.stop_reason != "tool_use":
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
-
-            tool_results = []
-            for tu in tool_uses:
-                yield f"data: {json.dumps({'type': 'tool_call', 'tool': tu.name, 'input': tu.input})}\n\n"
-                result = _handle_tool_call(name, tu.name, tu.input)
-                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tu.name, 'result': result})}\n\n"
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": json.dumps(result),
-                })
-
-            current_messages.append({"role": "assistant", "content": assistant_content})
-            current_messages.append({"role": "user", "content": tool_results})
-
-    return Response(generate(), mimetype="text/event-stream")
 
 
 # ------------------------------------------------------------------
@@ -1659,4 +1416,8 @@ def create_app() -> Flask:
         "disabled — set `mcp_token` global to require a bearer token"
     )
     print(f"[choola] MCP: POST /mcp (auth: {mcp_auth})")
+    api_auth = "enabled" if (get_global_sync("api_token") or "") else (
+        "disabled — set `api_token` global to require a bearer token"
+    )
+    print(f"[choola] API: /api/* (auth: {api_auth})")
     return app

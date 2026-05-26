@@ -114,6 +114,60 @@ def _description_from_trigger(
     return " — ".join(parts)
 
 
+def _short_description(
+    workflow_name: str,
+    trigger_kind: str,
+    config: dict[str, Any],
+    node_type: str | None,
+) -> str:
+    """Compact one-liner for the `instructions` block — no protocol noise."""
+    from choola.server import node_registry
+
+    cls = node_registry.get(node_type) if node_type else None
+    base = (cls.description if cls and cls.description else "").strip()
+    if base:
+        return base
+    if trigger_kind == "form":
+        title = config.get("form_title") or config.get("name")
+        if title:
+            return str(title)
+    return f"Run the {workflow_name!r} workflow (trigger: {trigger_kind})."
+
+
+def _build_instructions() -> str:
+    """Server-level guidance returned in the `initialize` response.
+
+    Clients (Claude Code / Desktop) read this once at connection time and use
+    it to decide when to surface or search for this server's tools.
+    """
+    registry = build_tools_registry()
+    from choola.server import _find_trigger
+
+    lines: list[str] = [
+        "This server exposes every Choola workflow as one MCP tool. Each tool runs one workflow end-to-end via its trigger.",
+        "",
+        "Trigger tool_search for \"choola\" whenever the user:",
+        "- Writes \"choola\" anywhere in the message",
+        "- Asks to \"run\", \"trigger\", or \"execute\" a workflow by name",
+        "- References any of the workflows listed below by their friendly name",
+        "",
+    ]
+
+    if not registry:
+        lines.append("Available workflows: none — create one with `choola create <name>`.")
+        return "\n".join(lines)
+
+    lines.append("Available workflows:")
+    for tool_name, entry in registry.items():
+        workflow_name = entry["workflow"]
+        trigger_kind = entry["trigger_kind"]
+        node_type = entry.get("node_type")
+        _, config, _ = _find_trigger(workflow_name)
+        desc = _short_description(workflow_name, trigger_kind, config, node_type)
+        lines.append(f"- {tool_name} — {desc}")
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------
 # Input-schema derivation
 # ------------------------------------------------------------------
@@ -321,6 +375,7 @@ def dispatch(method: str, params: dict[str, Any] | None) -> tuple[Any, dict[str,
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "choola", "version": __version__},
+                "instructions": _build_instructions(),
             },
             None,
         )

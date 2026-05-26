@@ -48,10 +48,12 @@ In any empty directory:
 
 ```bash
 choola init          # Creates workflows/, choola.db, and .claude/ (slash commands + permissions)
-choola start         # Opens the visual editor at http://localhost:5000
+claude init          # Initialize Claude Code in the project — your primary interface for building workflows
 ```
 
-`choola init` also drops a Claude Code template into `.claude/` with pre-approved permissions and the `/workflow`, `/node`, `/debug`, and `/replay` slash commands. If `.claude/` already exists, the copy is skipped so your customizations are preserved.
+`choola init` drops a Claude Code template into `.claude/` with pre-approved permissions and the `/workflow`, `/node`, `/debug`, and `/replay` slash commands. If `.claude/` already exists, the copy is skipped so your customizations are preserved.
+
+Claude Code is the primary surface for authoring automations — it uses Choola as a programming framework, scaffolding workflows, editing nodes, and replaying runs from your terminal. The visual editor (`choola start`) is a complementary tool for inspecting state and managing credentials; it's not required to build or run workflows.
 
 The editor lays each workflow out as a canvas of connected nodes you can drag, wire, and run:
 
@@ -86,13 +88,12 @@ Claude reads the framework's rules, scaffolds the folder, writes one node per st
 
 ### Run it
 
-From the UI: click a workflow, press **Run**, watch execution stream live.
+From Claude Code: ask it to run the workflow, or invoke any `choola` CLI command in the built-in terminal.
 
 From the CLI:
 
 ```bash
 choola init                                                # Initialize a project (workflows/, .claude/, choola.db)
-choola start                                               # Launch the editor at http://localhost:5000
 choola create my-workflow                                  # Scaffold a new workflow
 choola list                                                # List all workflows
 choola explain my-workflow                                 # Print each node's title + description in DAG order
@@ -101,7 +102,10 @@ choola replay my-workflow <run_id> <node_id>               # Re-run one node aga
 choola dream [workflow]                                    # Train XGBoost classifiers for every LLML node
 choola credential <name>                                   # Interactively create/update a credential (incl. OAuth2)
 choola nodes                                               # List core node types
+choola start                                               # Launch the editor at http://localhost:5000 (for inspecting state + creating credentials)
 ```
+
+From the UI (`choola start`): click a workflow, press **Run**, watch execution stream live. The visual editor is most useful for inspecting per-workflow databases, browsing evaluations, and creating credentials — day-to-day authoring happens in Claude Code.
 
 ### Debug with evaluations
 

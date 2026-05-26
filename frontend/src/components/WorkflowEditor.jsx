@@ -30,7 +30,6 @@ import '@xyflow/react/dist/style.css';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import ChatPanel from './ChatPanel';
 import TerminalPanel from './TerminalPanel';
 import WorkflowDbView from './WorkflowDbView';
 import WorkflowVectorDbView from './WorkflowVectorDbView';
@@ -332,7 +331,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [running, setRunning] = useState(false);
   const [payloadInput, setPayloadInput] = useState('{"start": true}');
   const [codeModal, setCodeModal] = useState(null);
-  const [chatOpen, setChatOpen] = useState(false);
   const [workflowStatus, setWorkflowStatus] = useState('draft');
   const [triggerInfo, setTriggerInfo] = useState(null);
   const [waitingForTrigger, setWaitingForTrigger] = useState(false);
@@ -692,27 +690,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
     }
   };
 
-  // Refresh after chat changes topology
-  const refreshAfterChat = useCallback(() => {
-    fetch(`/api/workflows/${workflowName}/topology`)
-      .then(r => r.json())
-      .then(topo => {
-        const flowNodes = (topo.nodes || []).map(n => ({
-          id: n.id,
-          type: 'default',
-          position: n.position || { x: 0, y: 0 },
-          data: {
-            label: n.data?.label || n.type.split('.').pop(),
-            ...n.data,
-            nodeType: n.type,
-          },
-          style: { border: `1.5px solid ${STATUS_COLORS.IDLE}` },
-        }));
-        setNodes(flowNodes);
-        setEdges((topo.edges || []).map(e => ({ ...e, type: 'deletable', animated: false })));
-      });
-  }, [workflowName]);
-
   // Credentials
   const refreshCredentials = () =>
     fetch('/api/credentials').then(r => r.json()).then(setCredentials);
@@ -826,22 +803,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
         >
           {isPublished ? 'Unpublish' : 'Publish'}
         </button>
-
-        {/* AI Chat toggle — draft only */}
-        {!isPublished && (
-          <button
-            onClick={() => setChatOpen(prev => !prev)}
-            style={{
-              ...btnGhost,
-              height: 30, fontSize: 12,
-              background: chatOpen ? '#f0eee6' : 'transparent',
-              gap: 5,
-            }}
-          >
-            <span style={{ fontSize: 13 }}>✦</span>
-            {chatOpen ? 'Close chat' : 'AI chat'}
-          </button>
-        )}
 
         {/* Settings */}
         <button
@@ -1151,12 +1112,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
           </div>
         </div>
 
-        {/* ── Chat panel ── */}
-        {chatOpen && !isPublished && (
-          <div style={{ width: 360, flexShrink: 0 }}>
-            <ChatPanel workflowName={workflowName} onNodesChanged={refreshAfterChat} />
-          </div>
-        )}
       </div>
 
       {/* ── Settings modal ── */}

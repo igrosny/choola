@@ -229,7 +229,6 @@ The full set of endpoints exposed by `choola/server.py`:
 | POST | `/api/workflows/<name>/run` | Execute a workflow |
 | GET | `/api/workflows/<name>/stream/<run_id>` | SSE stream for live run status |
 | POST | `/api/workflows/<name>/refresh` | Re-discover nodes from disk |
-| POST | `/api/workflows/<name>/chat` | Chat with Claude about the workflow (SSE) |
 | GET | `/api/workflows/<name>/trigger-info` | Get trigger type and config |
 
 ### Evaluations

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-15
+
+### Added
+- Add `ProxyFix` middleware so `request.host_url` honors `X-Forwarded-Proto` and `X-Forwarded-Host`, enabling correct `https://` OAuth redirect URIs when Choola runs behind a reverse proxy such as Cloudflare Tunnel or nginx
+
+### Changed
+- Tighten the workflow authoring guide's "Working-directory context" rule so the entire Claude Code session is scoped to the CWD workflow, with explicit handling for one-off overrides
+
 ## [0.10.0] - 2026-05-12
 
 ### Added

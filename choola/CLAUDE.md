@@ -469,3 +469,5 @@ python -c "from choola.database import set_global_sync; set_global_sync('mcp_tok
 ```
 
 Clients then send `Authorization: Bearer <random hex>`. Set the value back to the empty string to turn auth off again. The startup banner reports the current state (`auth: enabled` / `auth: disabled`).
+
+The same pattern protects the REST API (`/api/*`) — set the `api_token` global to require `Authorization: Bearer <token>` on every `/api/` request. The OAuth2 callback (`/api/oauth2/google/callback`) stays open since Google signs the redirect via `state`. The SSE stream (`/api/workflows/<name>/stream/<run_id>`) also accepts `?token=<token>` as a query parameter because browser `EventSource` clients can't set headers. Webhooks under `/webhook/*` and form triggers under `/dev/*/form` are not behind `api_token` — they have their own per-route auth surface.
