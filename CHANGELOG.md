@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-26
+
+### Added
+- Add persistent terminal sessions: the pty lives in a server-side registry with a 256KB replay buffer, so the same shell survives WebSocket disconnects, page refreshes, and navigation between workflows
+- Mount the terminal at the App level with a fixed bottom-right toggle, making it accessible from every page (workflow list, workflow editor)
+
+### Changed
+- Open the terminal in the project root regardless of the active workflow; the session id is stored in `localStorage` and replayed on reconnect
+
+### Removed
+- Remove the in-editor `TerminalPanel` and footer toggle from the workflow editor (superseded by the global terminal)
+
 ## [0.11.0] - 2026-05-15
 
 ### Added
