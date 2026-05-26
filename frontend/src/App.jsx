@@ -16,6 +16,7 @@ import { useState } from 'react';
 import AuthPage from './components/AuthPage';
 import WorkflowsPage from './components/WorkflowsPage';
 import WorkflowEditor from './components/WorkflowEditor';
+import GlobalTerminal from './components/GlobalTerminal';
 
 export default function App() {
   const [user, setUser] = useState(() => {
@@ -28,6 +29,8 @@ export default function App() {
   });
 
   const [activeWorkflow, setActiveWorkflow] = useState(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(260);
 
   const handleSignOut = () => {
     localStorage.removeItem('choola_session');
@@ -35,12 +38,11 @@ export default function App() {
     setActiveWorkflow(null);
   };
 
+  let page;
   if (!user) {
-    return <AuthPage onAuth={(u) => setUser(u)} />;
-  }
-
-  if (activeWorkflow) {
-    return (
+    page = <AuthPage onAuth={(u) => setUser(u)} />;
+  } else if (activeWorkflow) {
+    page = (
       <WorkflowEditor
         workflowName={activeWorkflow}
         onBack={() => setActiveWorkflow(null)}
@@ -48,13 +50,52 @@ export default function App() {
         onSignOut={handleSignOut}
       />
     );
+  } else {
+    page = (
+      <WorkflowsPage
+        user={user}
+        onOpenWorkflow={(name) => setActiveWorkflow(name)}
+        onSignOut={handleSignOut}
+      />
+    );
   }
 
   return (
-    <WorkflowsPage
-      user={user}
-      onOpenWorkflow={(name) => setActiveWorkflow(name)}
-      onSignOut={handleSignOut}
-    />
+    <>
+      {page}
+      {user && (
+        <>
+          <GlobalTerminal
+            open={terminalOpen}
+            height={terminalHeight}
+            onResize={setTerminalHeight}
+            onClose={() => setTerminalOpen(false)}
+          />
+          {!terminalOpen && (
+            <button
+              onClick={() => setTerminalOpen(true)}
+              title="Open terminal"
+              style={{
+                position: 'fixed', bottom: 16, right: 16,
+                zIndex: 60,
+                background: '#1f1e1d',
+                color: '#e8e6dc',
+                border: '0.8px solid rgba(255,255,255,0.12)',
+                borderRadius: 6,
+                padding: '6px 12px',
+                fontFamily: 'var(--font-ui)',
+                fontSize: 12,
+                cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+              }}
+            >
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, lineHeight: 1 }}>›_</span>
+              Terminal
+            </button>
+          )}
+        </>
+      )}
+    </>
   );
 }

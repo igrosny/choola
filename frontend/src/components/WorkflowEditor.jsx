@@ -30,7 +30,6 @@ import '@xyflow/react/dist/style.css';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import TerminalPanel from './TerminalPanel';
 import WorkflowDbView from './WorkflowDbView';
 import WorkflowVectorDbView from './WorkflowVectorDbView';
 import WorkflowEvaluationsView from './WorkflowEvaluationsView';
@@ -338,8 +337,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
   const [credentials, setCredentials] = useState([]);
   const [credForm, setCredForm] = useState({ name: '', provider: 'claude', value: '' });
   const [activeCanvasTab, setActiveCanvasTab] = useState('canvas'); // 'canvas' | 'db' | 'vectordb' | 'evaluations'
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalHeight, setTerminalHeight] = useState(260);
   const [dbSchema, setDbSchema] = useState(null); // { exists, tables, path }
   const [vectorSchema, setVectorSchema] = useState(null); // { exists, collections, path }
   const [evalCount, setEvalCount] = useState(0);
@@ -1049,66 +1046,6 @@ export default function WorkflowEditor({ workflowName, onBack, user }) {
               )}
             </div>
 
-            {terminalOpen && (
-              <>
-                <div
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    const startY = e.clientY;
-                    const startH = terminalHeight;
-                    const onMove = (ev) => {
-                      const next = Math.min(800, Math.max(120, startH + (startY - ev.clientY)));
-                      setTerminalHeight(next);
-                    };
-                    const onUp = () => {
-                      window.removeEventListener('mousemove', onMove);
-                      window.removeEventListener('mouseup', onUp);
-                      document.body.style.userSelect = '';
-                    };
-                    document.body.style.userSelect = 'none';
-                    window.addEventListener('mousemove', onMove);
-                    window.addEventListener('mouseup', onUp);
-                  }}
-                  style={{
-                    height: 5,
-                    cursor: 'row-resize',
-                    background: 'rgba(31,30,29,0.08)',
-                    borderTop: '0.8px solid rgba(31,30,29,0.1)',
-                    borderBottom: '0.8px solid rgba(31,30,29,0.1)',
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ height: terminalHeight, flexShrink: 0, minHeight: 0 }}>
-                  <TerminalPanel visible={terminalOpen} workflowName={workflowName} />
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Footer bar */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '4px 10px',
-            background: '#faf9f5',
-            borderTop: '0.8px solid rgba(31,30,29,0.1)',
-            flexShrink: 0,
-            height: 28,
-          }}>
-            <button
-              onClick={() => setTerminalOpen(prev => !prev)}
-              title={terminalOpen ? 'Close terminal' : 'Open terminal'}
-              style={{
-                border: 'none', background: terminalOpen ? '#e8e6dc' : 'transparent',
-                color: '#3d3d3a', fontSize: 11,
-                padding: '3px 8px', borderRadius: 5,
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 6,
-                fontFamily: 'var(--font-ui)',
-              }}
-            >
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1 }}>›_</span>
-              Terminal
-            </button>
           </div>
         </div>
 

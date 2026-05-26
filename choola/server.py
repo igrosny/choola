@@ -1264,42 +1264,31 @@ def webhook_handler(webhook_path: str):
 
 
 # ------------------------------------------------------------------
-# Terminal (PTY over WebSocket)
+# Terminal (PTY over WebSocket, with persistent sessions)
 # ------------------------------------------------------------------
-@sock.route("/api/terminal")
-def terminal_socket(ws):
-    """Bridge a bash pty running in CWD with a browser xterm instance.
+# The pty lives in a server-side session registry so it survives WebSocket
+# disconnects (page refresh, browser navigation). Clients reattach by passing
+# the session id they received on the original connect.
+_TERMINAL_BUFFER_BYTES = 256 * 1024  # ~256KB scrollback replayed on reattach
+_terminal_sessions: dict[str, dict] = {}
+_terminal_sessions_lock = threading.Lock()
 
-    Client messages are JSON:
-      {"type": "input",  "data": "<str>"}       - stdin
-      {"type": "resize", "rows": N, "cols": N}  - window size
-    Server messages are raw strings containing pty stdout bytes decoded as utf-8.
-    """
+
+def _terminal_set_winsize(fd: int, rows: int, cols: int) -> None:
     import fcntl
-    import pty
-    import select
-    import signal
     import struct
     import termios
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except Exception:
+        pass
 
-    # Optionally launch in a specific workflow's folder so `claude` picks up
-    # the root .claude/ by walking up the tree. Validate the name stays inside
-    # WORKFLOWS_DIR to prevent path traversal.
-    start_dir = CWD
-    workflow_name = (request.args.get("workflow") or "").strip()
-    if workflow_name:
-        candidate = (WORKFLOWS_DIR / workflow_name).resolve()
-        try:
-            candidate.relative_to(WORKFLOWS_DIR.resolve())
-            if candidate.is_dir():
-                start_dir = candidate
-        except ValueError:
-            pass
 
+def _terminal_spawn(start_dir: Path) -> tuple[int, int]:
+    import pty
     shell = os.environ.get("SHELL", "/bin/bash")
     pid, fd = pty.fork()
     if pid == 0:
-        # child: exec the shell in the resolved cwd
         try:
             os.chdir(str(start_dir))
         except Exception:
@@ -1307,43 +1296,134 @@ def terminal_socket(ws):
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
         os.execvpe(shell, [shell], env)
+    return pid, fd
 
-    # parent: bridge fd <-> websocket
-    stop = threading.Event()
 
-    def _set_winsize(rows: int, cols: int) -> None:
+def _terminal_reader(session: dict) -> None:
+    """Owns the pty fd for one session. Buffers output for replay and forwards
+    to whichever WebSocket is currently attached. Runs until the shell exits.
+    """
+    import select as _select
+    import signal as _signal
+
+    fd = session["fd"]
+    while session["alive"]:
         try:
-            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            r, _, _ = _select.select([fd], [], [], 0.5)
+        except (OSError, ValueError):
+            break
+        if fd not in r:
+            continue
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+
+        with session["lock"]:
+            buf = session["buffer"]
+            buf.extend(data)
+            if len(buf) > _TERMINAL_BUFFER_BYTES:
+                del buf[: len(buf) - _TERMINAL_BUFFER_BYTES]
+
+        ws = session.get("ws")
+        if ws is not None:
+            try:
+                ws.send(json.dumps({
+                    "type": "output",
+                    "data": data.decode("utf-8", errors="replace"),
+                }))
+            except Exception:
+                # Attached ws is gone; another may reattach later.
+                pass
+
+    session["alive"] = False
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.kill(session["pid"], _signal.SIGHUP)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        os.waitpid(session["pid"], os.WNOHANG)
+    except (OSError, ChildProcessError):
+        pass
+    with _terminal_sessions_lock:
+        _terminal_sessions.pop(session["id"], None)
+
+
+@sock.route("/api/terminal")
+def terminal_socket(ws):
+    """Bridge a persistent bash pty with the browser xterm.
+
+    Query params:
+      session_id  Existing session to reattach to. If missing or unknown a new
+                  session is spawned in CWD and its id is sent back to the
+                  client on connect.
+
+    Both directions speak JSON-encoded text frames:
+      client -> server:
+        {"type": "input",  "data": "<str>"}
+        {"type": "resize", "rows": N, "cols": N}
+      server -> client:
+        {"type": "session", "id": "<str>"}      (sent once at connect)
+        {"type": "output",  "data": "<str>"}    (pty stdout, incl. replay)
+    """
+    import secrets
+
+    requested = (request.args.get("session_id") or "").strip()
+    session = None
+    if requested:
+        with _terminal_sessions_lock:
+            existing = _terminal_sessions.get(requested)
+            if existing and existing.get("alive"):
+                session = existing
+
+    if session is None:
+        pid, fd = _terminal_spawn(CWD)
+        session_id = secrets.token_hex(16)
+        session = {
+            "id": session_id,
+            "pid": pid,
+            "fd": fd,
+            "buffer": bytearray(),
+            "lock": threading.Lock(),
+            "alive": True,
+            "ws": None,
+        }
+        with _terminal_sessions_lock:
+            _terminal_sessions[session_id] = session
+        threading.Thread(target=_terminal_reader, args=(session,), daemon=True).start()
+
+    previous_ws = session.get("ws")
+    session["ws"] = ws
+    if previous_ws is not None and previous_ws is not ws:
+        try:
+            previous_ws.close()
         except Exception:
             pass
 
-    def _reader():
-        try:
-            while not stop.is_set():
-                r, _, _ = select.select([fd], [], [], 0.2)
-                if fd in r:
-                    try:
-                        data = os.read(fd, 4096)
-                    except OSError:
-                        break
-                    if not data:
-                        break
-                    try:
-                        ws.send(data.decode("utf-8", errors="replace"))
-                    except Exception:
-                        break
-        finally:
-            stop.set()
-
-    t = threading.Thread(target=_reader, daemon=True)
-    t.start()
+    try:
+        ws.send(json.dumps({"type": "session", "id": session["id"]}))
+        with session["lock"]:
+            replay = bytes(session["buffer"])
+        if replay:
+            ws.send(json.dumps({
+                "type": "output",
+                "data": replay.decode("utf-8", errors="replace"),
+            }))
+    except Exception:
+        if session.get("ws") is ws:
+            session["ws"] = None
+        return
 
     try:
-        while not stop.is_set():
+        while session["alive"]:
             msg = ws.receive(timeout=1)
             if msg is None:
-                if stop.is_set():
-                    break
                 continue
             try:
                 parsed = json.loads(msg)
@@ -1353,25 +1433,19 @@ def terminal_socket(ws):
             if mtype == "input":
                 data = parsed.get("data", "")
                 try:
-                    os.write(fd, data.encode("utf-8"))
+                    os.write(session["fd"], data.encode("utf-8"))
                 except OSError:
                     break
             elif mtype == "resize":
-                _set_winsize(int(parsed.get("rows", 24)), int(parsed.get("cols", 80)))
+                _terminal_set_winsize(
+                    session["fd"],
+                    int(parsed.get("rows", 24)),
+                    int(parsed.get("cols", 80)),
+                )
     finally:
-        stop.set()
-        try:
-            os.close(fd)
-        except Exception:
-            pass
-        try:
-            os.kill(pid, signal.SIGHUP)
-        except Exception:
-            pass
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except Exception:
-            pass
+        # Detach this ws but keep the pty alive for a future reconnect.
+        if session.get("ws") is ws:
+            session["ws"] = None
 
 
 # ------------------------------------------------------------------
